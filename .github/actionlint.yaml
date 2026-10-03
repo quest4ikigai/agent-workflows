@@ -1,0 +1,15 @@
+# actionlint configuration for this repository's CI.
+#
+# Both ignores are narrowly scoped false positives caused by actionlint's
+# bundled metadata lagging behind GitHub and claude-code-action:
+#
+# 1. job.workflow_repository / job.workflow_sha are documented job-context
+#    properties (they identify the reusable workflow that defines the job).
+#    The "Tooling self-test" CI job proves they resolve at runtime.
+# 2. anthropics/claude-code-action@v1 declares a `conclusion` output in its
+#    action.yml; actionlint's cached output list predates it.
+paths:
+  .github/workflows/**/*.{yml,yaml}:
+    ignore:
+      - 'property "workflow_(repository|sha)" is not defined in object type \{check_run_id'
+      - 'property "conclusion" is not defined in object type \{branch_name'
