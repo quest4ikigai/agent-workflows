@@ -25,6 +25,23 @@ before changing the reusable workflows or the runtime code.
 | Claude (Opus by default) | One holistic read-only audit + one consolidated fix after the normal budget is spent | Request further review; continue the loop |
 | Automation | Moves state forward, records status, requests reviews | Merge, approve, or claim human acceptance |
 
+## Reusable versus repository-specific
+
+What was extracted from the Mealie MCP workflow, and where each concern lives now:
+
+| Concern | Lives in | Notes |
+| --- | --- | --- |
+| Event handling, job structure, permissions, concurrency | agent-workflows (reusable workflows) | identical for every consumer |
+| Trust checks, fork/branch safety, opt-in rules | agent-workflows (`lib/runtime/gate.mjs`) | universal policy |
+| Review state, budget, escalation, Codex request/detection, thread resolution | agent-workflows (`lib/runtime/state.mjs`, `codex.mjs`, `flows.mjs`) | generalized from `agent-review-state.sh` |
+| Role prompts (implement, remediate, audit, consolidated fix, human fix) | agent-workflows (`lib/runtime/prompts.mjs`) | generic; no project facts |
+| Base branch, branch prefix, trusted users, models, turn limits, budgets, timeouts, Codex wait | consumer `.github/agent/config.yml` | was hard-coded (`agent-main`, `sonnet`, `3`, owner check) |
+| Runtime versions and dependency installation | consumer `config.yml` (`setup.*`) + `setup.sh` | was `setup-node@22` + `yarn install --immutable` |
+| Validation commands | consumer `validate.sh` | was the yarn command list repeated in six prompts |
+| Engineering conventions, architecture, review guidance | consumer `CLAUDE.md`, `AGENTS.md`, … (listed in `context`) | was partly inlined in prompts (e.g. `gen:docs`, upstream warnings) |
+| PR body extras (contributor acknowledgement) | consumer `pull_request.footer` file | was inlined in the implement workflow |
+| Triggers and the permission ceiling | consumer wrappers (generated, identical everywhere) | cannot live in a reusable workflow |
+
 ## Components
 
 ```text
