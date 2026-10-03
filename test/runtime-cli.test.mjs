@@ -47,7 +47,6 @@ function runMain(args, { event, env = {} }) {
       GITHUB_EVENT_NAME: 'issues',
       GITHUB_OUTPUT: outputPath,
       GITHUB_WORKSPACE: dir,
-      GITHUB_TOKEN: 'unused',
       GITHUB_RUN_ID: '1',
       ...env,
     },
@@ -77,10 +76,16 @@ test('result command maps structured output to a status', () => {
   assert.match(bad.stdout, /::warning::Claude returned no structured result/);
 });
 
-test('unknown commands and broken config fail with an annotation', () => {
+test('unknown commands fail with an annotation', () => {
   const r = runMain(['frobnicate'], { event: {} });
   assert.equal(r.status, 1);
   assert.match(r.stdout, /::error::agent-workflows frobnicate failed: unknown command frobnicate/);
+});
+
+test('API commands demand a token; prompt/result run without one (as in the workflows)', () => {
+  const r = runMain(['review-cycle'], { event: {}, env: { AW_CONFIG: JSON.stringify(defaultConfig()) } });
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /GITHUB_TOKEN is required for review-cycle/);
 });
 
 test('Outputs never lets a value terminate its own heredoc', () => {

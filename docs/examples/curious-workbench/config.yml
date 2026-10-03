@@ -1,0 +1,61 @@
+# agent-workflows configuration
+#
+# Read by the agent workflows from the repository DEFAULT branch.
+# Every setting is documented in docs/configuration.md of agent-workflows:
+# https://github.com/quest4ikigai/agent-workflows/blob/main/docs/configuration.md
+# Validate locally with: agent-workflows check .
+version: 1
+
+# Branch that automated implementation PRs target.
+base_branch: main
+
+# Prefix for branches created by automated implementation.
+branch_prefix: claude/
+
+# GitHub users allowed to trigger agent work. Each must also have write access.
+trusted_users:
+  - quest4ikigai
+
+# Path A: Claude implements an approved [agent-build] issue.
+implementation:
+  model: sonnet
+  max_turns: 40
+  timeout_minutes: 75
+
+# Claude addresses Codex findings, up to max_passes automated passes.
+remediation:
+  model: sonnet
+  max_turns: 30
+  max_passes: 3
+  timeout_minutes: 90
+
+# One holistic audit + consolidated fix once the remediation budget is spent.
+escalation:
+  enabled: true
+  model: opus
+  audit_max_turns: 40
+  fix_max_turns: 45
+
+# Owner-requested fixes via a "/agent-fix <feedback>" PR comment.
+human_fix:
+  model: sonnet
+  max_turns: 30
+  timeout_minutes: 75
+
+# How long a workflow waits for Codex to finish a review (0 = do not wait).
+codex:
+  wait_minutes: 15
+
+# Environment prepared before Claude starts.
+setup:
+  node_version: "22"
+  script: .github/agent/setup.sh
+
+# Single source of truth for "is this change acceptable".
+validation:
+  script: .github/agent/validate.sh
+
+# Project documents agents should read before working (missing files are skipped).
+context:
+  - CLAUDE.md
+  - AGENTS.md

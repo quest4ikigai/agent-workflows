@@ -191,7 +191,9 @@ otherwise                                   → remediate
 
 **Remediate:** Claude (remediation.model) addresses actionable findings, the
 workflow re-runs validation, resolves Codex threads, increments `passes` when the
-review was countable, and requests a re-review (origin=remediation).
+review was countable, and requests a re-review (origin=remediation). A pass that
+pushes no commits, or whose validation fails, still counts but stops for a human
+instead of requesting another review; a crashed run does not count.
 
 **Escalate:** Opus runs a read-only holistic audit of the whole PR. The workflow
 verifies the audit did not push anything. `clean` → final=complete;
@@ -301,3 +303,7 @@ Verified against GitHub documentation in October 2026.
     exchange since August 2025 but must be verified live in the first consumer.
 13. **`uses:` cannot be an expression.** Third-party action versions are pinned
     centrally in the reusable workflows.
+14. **`pull_request` and `pull_request_review` workflows do not run while a PR has
+    merge conflicts** (there is no merge commit). Label opt-in and remediation
+    wait until conflicts are resolved; `/agent-review` and `/agent-fix`
+    (`issue_comment`) still run. The original Mealie workflow had the same limit.

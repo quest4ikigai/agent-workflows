@@ -72,12 +72,15 @@ test('Path A: includes the configured PR footer', async () => {
   assert.match(Object.values(gh.pulls)[0].body, /## AI-assisted contribution\n\n- \[ \] I understand the changes\./);
 });
 
-test('Path A: reuses an existing open PR for the same branch', async () => {
+test('Path A: reuses an existing open PR and its status comment', async () => {
   const { gh, ctx } = implementWorld();
   gh.addPull({ number: 77, head: { ref: 'claude/issue-5-add-widget-export' } });
+  gh.addComment(77, renderState({ passes: 2, final: 'blocked', maxPasses: 3, stage: 'old' }), BOT);
   await flows.finishImplement(ctx, implementInputs());
   assert.equal(Object.keys(gh.pulls).length, 1);
   assert.equal(ctx.outputs.values.pr_number, '77');
+  const state = stateOf(gh, 77);
+  assert.deepEqual([state.passes, state.final], [0, 'not_started']);
 });
 
 test('Path A: blocked and no_change results are reported on the issue without a PR', async () => {

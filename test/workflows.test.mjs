@@ -154,3 +154,51 @@ test('wrappers call exactly the reusable workflows that exist, with matching sec
     }
   }
 });
+
+// Inputs each runtime command reads (see run() in lib/runtime/main.mjs).
+const CLAUDE = ['CLAUDE_OUTCOME', 'CLAUDE_CONCLUSION', 'RAW_RESULT'];
+const VALIDATION = ['VALIDATION_OUTCOME', 'VALIDATION_RESULT'];
+const PAT = 'AGENT_GITHUB_TOKEN';
+const REQUIRED_ENV = {
+  gate: ['GITHUB_TOKEN'],
+  'prompt implement': ['AW_CONFIG'],
+  'prompt remediate': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF'],
+  'prompt audit': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF'],
+  'prompt final-fix': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF', 'AUDIT_FINDINGS', 'AUDIT_SUMMARY'],
+  'prompt human-fix': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF'],
+  result: ['RAW_RESULT'],
+  'preflight-implement': ['GITHUB_TOKEN', 'AW_CONFIG', 'ISSUE_NUMBER'],
+  'finish-implement': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'ISSUE_NUMBER', 'PREFLIGHT', 'SETUP_OUTCOME', 'CLAUDE_BRANCH', ...CLAUDE, ...VALIDATION],
+  'review-cycle': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER', 'ORIGIN'],
+  'start-review': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER', 'ACTOR', 'VIA'],
+  'plan-remediation': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER'],
+  'finish-remediation': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'PASSES', 'COUNTABLE', 'HEAD_SHA', ...CLAUDE, ...VALIDATION],
+  'finish-audit': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', ...CLAUDE],
+  'finish-final-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'AUDIT_SUMMARY', ...CLAUDE, ...VALIDATION],
+  'prepare-human-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'ACTOR'],
+  'finish-human-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'PROCEED', 'SETUP_OUTCOME', ...CLAUDE, ...VALIDATION],
+};
+
+test('every runtime step receives exactly the inputs its command reads', () => {
+  const envNames = (block) => [...(block || '').matchAll(/^ +([A-Z_]+): /gm)].map((m) => m[1]);
+  let checked = 0;
+  for (const f of REUSABLE) {
+    const text = read(f);
+    for (const job of jobs(text)) {
+      const jobEnv = envNames((job.match(/\n    env:\n((?: {6}.+\n)+)/) || [])[1]);
+      for (const step of steps(job)) {
+        const m = step.text.match(/node "\$AW" ([a-z-]+)(?: ([a-z-]+))?\n/);
+        if (!m) continue;
+        const key = REQUIRED_ENV[`${m[1]} ${m[2]}`] ? `${m[1]} ${m[2]}` : m[1];
+        const required = REQUIRED_ENV[key];
+        assert.ok(required, `${f}: no expectation for ${key}`);
+        const stepEnv = envNames((step.text.match(/\n {8}env:\n((?: {10}.+\n)+)/) || [])[1]);
+        const available = new Set([...jobEnv, ...stepEnv]);
+        for (const name of required) assert.ok(available.has(name), `${f}: "${key}" step is missing ${name}`);
+        if (!required.includes(PAT)) assert.ok(!stepEnv.includes(PAT), `${f}: "${key}" step should not receive the PAT`);
+        checked++;
+      }
+    }
+  }
+  assert.equal(checked, 24);
+});

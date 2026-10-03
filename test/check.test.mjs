@@ -106,7 +106,8 @@ test('GitHub checks read secret names, labels, branch state through gh', () => {
   assert.match(pat.hint, /gh secret set AGENT_GITHUB_TOKEN/);
   assert.equal(find(result, /label agent-review exists/)[0].status, 'ok');
   assert.match(find(result, /label agent-build missing/)[0].hint, /gh label create agent-build/);
-  assert.equal(find(result, /1 wrapper\(s\) not yet on main/)[0].status, 'warn');
+  assert.equal(find(result, /not yet on main: agent-human-fix\.yml/)[0].status, 'warn');
+  assert.equal(find(result, /different from the local checkout/).length, 0);
   assert.equal(find(result, /base branch main is not protected/)[0].status, 'warn');
   assert.equal(result.errors, 1);
 });
