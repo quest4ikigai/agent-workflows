@@ -1,0 +1,35 @@
+# Path A: automated implementation of an approved issue.
+#
+# Triggers (trusted users only; re-checked by the reusable workflow):
+#   - opening an issue whose title starts with "[agent-build]"
+#   - adding the "agent-build" label to an issue (also the retry mechanism)
+#
+# This wrapper contains no repository policy. Configure behaviour in
+# .github/agent/config.yml. Regenerate with `agent-workflows install`.
+# Docs: https://github.com/quest4ikigai/agent-workflows
+
+name: Agent - Implement
+
+on:
+  issues:
+    types: [opened, labeled]
+
+permissions: {}
+
+jobs:
+  implement:
+    # Cheap pre-filter so unrelated issue events never start a runner.
+    if: >-
+      (github.event.action == 'opened' && startsWith(github.event.issue.title, '[agent-build]')) ||
+      (github.event.action == 'labeled' && github.event.label.name == 'agent-build')
+    uses: __AW_REPO__/.github/workflows/implement.yml@__AW_REF__
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      actions: read
+      id-token: write
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}

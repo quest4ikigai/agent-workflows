@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22, 24]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+      - run: npm test
+
+  lint:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Render wrappers next to the reusable workflows
+        run: node scripts/render-wrappers.mjs .github/workflows/lint-wrapper- --local
+      - name: Install actionlint
+        run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+      - name: Run actionlint (includes shellcheck on run blocks)
+        run: ./actionlint -color
+
+  installer:
+    name: Installer smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install into a fixture repository and check it
+        run: |
+          set -euo pipefail
+          repo="$RUNNER_TEMP/fixture"
+          cp -R test/fixtures/npm-astro "$repo"
+          git -C "$repo" -c init.defaultBranch=main init -q
+          git -C "$repo" remote add origin https://github.com/example/fixture.git
+          git -C "$repo" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main
+          node bin/agent-workflows.mjs install "$repo" --offline --trusted-user example
+          node bin/agent-workflows.mjs install "$repo" --offline | tee "$RUNNER_TEMP/second-run.txt"
+          grep -q 'Everything is already up to date.' "$RUNNER_TEMP/second-run.txt"
+          node bin/agent-workflows.mjs check "$repo" --offline
+
+  tooling:
+    name: Tooling self-test
+    uses: ./.github/workflows/selftest.yml

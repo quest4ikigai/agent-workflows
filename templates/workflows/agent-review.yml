@@ -1,0 +1,41 @@
+# Independent review and bounded remediation for opted-in pull requests.
+#
+# Triggers:
+#   - a trusted user adds the "agent-review" label to a PR (Path B opt-in)
+#   - a trusted user comments "/agent-review" on a PR (start or restart review)
+#   - Codex submits a review on an opted-in PR (remediation / escalation)
+#
+# This wrapper contains no repository policy. Configure behaviour in
+# .github/agent/config.yml. Regenerate with `agent-workflows install`.
+# Docs: https://github.com/quest4ikigai/agent-workflows
+
+name: Agent - Review
+
+on:
+  pull_request:
+    types: [labeled]
+  pull_request_review:
+    types: [submitted]
+  issue_comment:
+    types: [created]
+
+permissions: {}
+
+jobs:
+  review:
+    # Cheap pre-filter so unrelated events never start a runner.
+    if: >-
+      (github.event_name == 'pull_request' && github.event.label.name == 'agent-review') ||
+      (github.event_name == 'pull_request_review' && startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && startsWith(github.event.comment.body, '/agent-review'))
+    uses: __AW_REPO__/.github/workflows/review.yml@__AW_REF__
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      actions: read
+      id-token: write
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}

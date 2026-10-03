@@ -1,0 +1,381 @@
+# Reusable workflow — independent review and bounded remediation.
+#
+# Called from a consumer's .github/workflows/agent-review.yml wrapper on:
+#   pull_request.labeled (agent-review)  → start a review cycle (Path B opt-in)
+#   issue_comment "/agent-review"        → start or restart a review cycle
+#   pull_request_review by Codex         → remediation, or escalation once the
+#                                          normal budget is spent
+# See docs/architecture.md for the state machine.
+
+name: agent-workflows / review
+
+on:
+  workflow_call:
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        description: Claude Code OAuth token (`claude setup-token`). Either this or ANTHROPIC_API_KEY is required.
+        required: false
+      ANTHROPIC_API_KEY:
+        description: Anthropic API key, as an alternative to CLAUDE_CODE_OAUTH_TOKEN.
+        required: false
+      AGENT_GITHUB_TOKEN:
+        description: Fine-grained PAT of a Codex-connected user; requests Codex reviews.
+        required: false
+
+permissions: {}
+
+jobs:
+  gate:
+    name: Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    outputs:
+      action: ${{ steps.gate.outputs.action }}
+      pr_number: ${{ steps.gate.outputs.pr_number }}
+      actor: ${{ steps.gate.outputs.actor }}
+      via: ${{ steps.gate.outputs.via }}
+      config: ${{ steps.gate.outputs.config }}
+    steps:
+      - name: Fetch agent-workflows tooling
+        shell: bash
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository / job.workflow_sha are unavailable; cannot locate agent-workflows tooling."
+            exit 1
+          fi
+          dest="$RUNNER_TEMP/agent-workflows"
+          rm -rf "$dest"
+          git -c init.defaultBranch=main init -q "$dest"
+          git -C "$dest" fetch -q --depth 1 "$GITHUB_SERVER_URL/$WORKFLOW_REPOSITORY" "$WORKFLOW_SHA"
+          git -C "$dest" -c advice.detachedHead=false checkout -q FETCH_HEAD
+          echo "AW=$dest/lib/runtime/main.mjs" >> "$GITHUB_ENV"
+          echo "agent-workflows tooling: $WORKFLOW_REPOSITORY@$WORKFLOW_SHA"
+
+      - name: Evaluate trigger
+        id: gate
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node "$AW" gate review
+
+  start:
+    name: Start review cycle
+    needs: gate
+    if: needs.gate.outputs.action == 'start'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(needs.gate.outputs.config).codex.job_timeout_minutes }}
+    concurrency:
+      group: agent-pr-${{ needs.gate.outputs.pr_number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Verify secrets
+        shell: bash
+        env:
+          AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AGENT_GITHUB_TOKEN" ]; then
+            echo "::error::Missing repository secret AGENT_GITHUB_TOKEN."
+            exit 1
+          fi
+
+      - name: Fetch agent-workflows tooling
+        shell: bash
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository / job.workflow_sha are unavailable; cannot locate agent-workflows tooling."
+            exit 1
+          fi
+          dest="$RUNNER_TEMP/agent-workflows"
+          rm -rf "$dest"
+          git -c init.defaultBranch=main init -q "$dest"
+          git -C "$dest" fetch -q --depth 1 "$GITHUB_SERVER_URL/$WORKFLOW_REPOSITORY" "$WORKFLOW_SHA"
+          git -C "$dest" -c advice.detachedHead=false checkout -q FETCH_HEAD
+          echo "AW=$dest/lib/runtime/main.mjs" >> "$GITHUB_ENV"
+          echo "agent-workflows tooling: $WORKFLOW_REPOSITORY@$WORKFLOW_SHA"
+
+      - name: Opt in and request Codex review
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          AW_CONFIG: ${{ needs.gate.outputs.config }}
+          PR_NUMBER: ${{ needs.gate.outputs.pr_number }}
+          ACTOR: ${{ needs.gate.outputs.actor }}
+          VIA: ${{ needs.gate.outputs.via }}
+        run: node "$AW" start-review
+
+  remediate:
+    name: Remediate
+    needs: gate
+    if: needs.gate.outputs.action == 'remediate'
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(needs.gate.outputs.config).remediation.timeout_minutes }}
+    concurrency:
+      group: agent-pr-${{ needs.gate.outputs.pr_number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      actions: read
+      id-token: write
+    env:
+      AW_CONFIG: ${{ needs.gate.outputs.config }}
+      PR_NUMBER: ${{ needs.gate.outputs.pr_number }}
+    steps:
+      - name: Verify secrets
+        shell: bash
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=0
+          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::Missing repository secret CLAUDE_CODE_OAUTH_TOKEN (or ANTHROPIC_API_KEY)."
+            missing=1
+          fi
+          if [ -z "$AGENT_GITHUB_TOKEN" ]; then
+            echo "::error::Missing repository secret AGENT_GITHUB_TOKEN."
+            missing=1
+          fi
+          exit "$missing"
+
+      - name: Fetch agent-workflows tooling
+        shell: bash
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository / job.workflow_sha are unavailable; cannot locate agent-workflows tooling."
+            exit 1
+          fi
+          dest="$RUNNER_TEMP/agent-workflows"
+          rm -rf "$dest"
+          git -c init.defaultBranch=main init -q "$dest"
+          git -C "$dest" fetch -q --depth 1 "$GITHUB_SERVER_URL/$WORKFLOW_REPOSITORY" "$WORKFLOW_SHA"
+          git -C "$dest" -c advice.detachedHead=false checkout -q FETCH_HEAD
+          echo "AW=$dest/lib/runtime/main.mjs" >> "$GITHUB_ENV"
+          echo "agent-workflows tooling: $WORKFLOW_REPOSITORY@$WORKFLOW_SHA"
+
+      - name: Read review state and decide
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+        run: node "$AW" plan-remediation
+
+      - name: Check out pull request branch
+        if: steps.plan.outputs.mode == 'remediate' || steps.plan.outputs.mode == 'escalate'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.plan.outputs.head_ref }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        if: (steps.plan.outputs.mode == 'remediate' || steps.plan.outputs.mode == 'escalate') && fromJSON(needs.gate.outputs.config).setup.node_version
+        uses: actions/setup-node@v7
+        with:
+          node-version: ${{ fromJSON(needs.gate.outputs.config).setup.node_version }}
+
+      - name: Set up Python
+        if: (steps.plan.outputs.mode == 'remediate' || steps.plan.outputs.mode == 'escalate') && fromJSON(needs.gate.outputs.config).setup.python_version
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ fromJSON(needs.gate.outputs.config).setup.python_version }}
+
+      - name: Run setup script
+        id: setup
+        if: steps.plan.outputs.mode == 'remediate' || steps.plan.outputs.mode == 'escalate'
+        shell: bash
+        env:
+          SCRIPT: ${{ fromJSON(needs.gate.outputs.config).setup.script }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SCRIPT" ]; then echo "No setup script configured."; exit 0; fi
+          if [ ! -f "$SCRIPT" ]; then echo "::error::Setup script $SCRIPT (setup.script) not found."; exit 1; fi
+          bash "$SCRIPT"
+
+      # ---- Normal remediation -------------------------------------------------
+
+      - name: Render remediation prompt
+        id: prompt_remediate
+        if: steps.plan.outputs.mode == 'remediate'
+        env:
+          HEAD_REF: ${{ steps.plan.outputs.head_ref }}
+        run: node "$AW" prompt remediate
+
+      - name: Remediate Codex findings with Claude
+        id: claude
+        if: steps.plan.outputs.mode == 'remediate'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          allowed_bots: "chatgpt-codex-connector,chatgpt-codex-connector[bot]"
+          additional_permissions: |
+            actions: read
+          prompt: ${{ steps.prompt_remediate.outputs.prompt }}
+          claude_args: ${{ steps.prompt_remediate.outputs.claude_args }}
+
+      - name: Read remediation result
+        id: result
+        if: steps.claude.outcome == 'success'
+        env:
+          RAW_RESULT: ${{ steps.claude.outputs.structured_output }}
+        run: node "$AW" result remediate
+
+      - name: Run repository validation
+        id: validate
+        if: steps.result.outputs.status == 'fixed'
+        shell: bash
+        env:
+          SCRIPT: ${{ fromJSON(needs.gate.outputs.config).validation.script }}
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::warning::Claude left uncommitted changes; validating the working tree as-is."
+            git status --short
+          fi
+          if [ -z "$SCRIPT" ]; then
+            echo "No validation script configured (validation.script); skipping."
+            echo "result=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ ! -f "$SCRIPT" ]; then echo "::error::Validation script $SCRIPT not found."; exit 1; fi
+          bash "$SCRIPT"
+
+      - name: Finish remediation
+        id: finish
+        if: always() && steps.plan.outputs.mode == 'remediate' && env.AW != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PASSES: ${{ steps.plan.outputs.passes }}
+          COUNTABLE: ${{ steps.plan.outputs.countable }}
+          HEAD_SHA: ${{ steps.plan.outputs.head_sha }}
+          CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
+          CLAUDE_CONCLUSION: ${{ steps.claude.outputs.conclusion }}
+          RAW_RESULT: ${{ steps.claude.outputs.structured_output }}
+          VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
+          VALIDATION_RESULT: ${{ steps.validate.outputs.result }}
+        run: node "$AW" finish-remediation
+
+      - name: Request Codex re-review and wait
+        if: steps.finish.outputs.request_review == 'true'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AGENT_GITHUB_TOKEN: ${{ secrets.AGENT_GITHUB_TOKEN }}
+          ORIGIN: remediation
+        run: node "$AW" review-cycle
+
+      # ---- One-shot escalation ------------------------------------------------
+
+      - name: Render audit prompt
+        id: prompt_audit
+        if: steps.plan.outputs.mode == 'escalate'
+        env:
+          HEAD_REF: ${{ steps.plan.outputs.head_ref }}
+        run: node "$AW" prompt audit
+
+      - name: Holistic final audit (read-only)
+        id: audit
+        if: steps.plan.outputs.mode == 'escalate'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          allowed_bots: "chatgpt-codex-connector,chatgpt-codex-connector[bot]"
+          additional_permissions: |
+            actions: read
+          prompt: ${{ steps.prompt_audit.outputs.prompt }}
+          claude_args: ${{ steps.prompt_audit.outputs.claude_args }}
+
+      - name: Finish audit
+        id: finish_audit
+        if: always() && steps.plan.outputs.mode == 'escalate' && env.AW != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.plan.outputs.head_sha }}
+          CLAUDE_OUTCOME: ${{ steps.audit.outcome }}
+          CLAUDE_CONCLUSION: ${{ steps.audit.outputs.conclusion }}
+          RAW_RESULT: ${{ steps.audit.outputs.structured_output }}
+        run: node "$AW" finish-audit
+
+      - name: Render consolidated fix prompt
+        id: prompt_fix
+        if: steps.finish_audit.outputs.run_fix == 'true'
+        env:
+          HEAD_REF: ${{ steps.plan.outputs.head_ref }}
+          AUDIT_FINDINGS: ${{ steps.finish_audit.outputs.findings }}
+          AUDIT_SUMMARY: ${{ steps.finish_audit.outputs.summary }}
+        run: node "$AW" prompt final-fix
+
+      - name: Apply consolidated final-audit fixes
+        id: final_fix
+        if: steps.finish_audit.outputs.run_fix == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          allowed_bots: "chatgpt-codex-connector,chatgpt-codex-connector[bot]"
+          additional_permissions: |
+            actions: read
+          prompt: ${{ steps.prompt_fix.outputs.prompt }}
+          claude_args: ${{ steps.prompt_fix.outputs.claude_args }}
+
+      - name: Read consolidated fix result
+        id: final_result
+        if: steps.final_fix.outcome == 'success'
+        env:
+          RAW_RESULT: ${{ steps.final_fix.outputs.structured_output }}
+        run: node "$AW" result final-fix
+
+      - name: Run repository validation after final fix
+        id: validate_final
+        if: steps.final_result.outputs.status == 'fixed'
+        shell: bash
+        env:
+          SCRIPT: ${{ fromJSON(needs.gate.outputs.config).validation.script }}
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::warning::Claude left uncommitted changes; validating the working tree as-is."
+            git status --short
+          fi
+          if [ -z "$SCRIPT" ]; then
+            echo "No validation script configured (validation.script); skipping."
+            echo "result=skipped" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ ! -f "$SCRIPT" ]; then echo "::error::Validation script $SCRIPT not found."; exit 1; fi
+          bash "$SCRIPT"
+
+      - name: Finish consolidated fix
+        if: always() && steps.finish_audit.outputs.run_fix == 'true' && env.AW != ''
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AUDIT_SUMMARY: ${{ steps.finish_audit.outputs.summary }}
+          CLAUDE_OUTCOME: ${{ steps.final_fix.outcome }}
+          CLAUDE_CONCLUSION: ${{ steps.final_fix.outputs.conclusion }}
+          RAW_RESULT: ${{ steps.final_fix.outputs.structured_output }}
+          VALIDATION_OUTCOME: ${{ steps.validate_final.outcome }}
+          VALIDATION_RESULT: ${{ steps.validate_final.outputs.result }}
+        run: node "$AW" finish-final-fix

@@ -1,0 +1,22 @@
+{
+  "name": "agent-workflows",
+  "version": "1.0.0",
+  "description": "Reusable GitHub Actions workflows and installer for Claude implementation, Codex review and bounded remediation.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agent-workflows": "bin/agent-workflows.mjs"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "templates"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "license": "UNLICENSED"
+}

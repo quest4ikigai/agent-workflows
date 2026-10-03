@@ -1,0 +1,9 @@
+name: Agent - Implement
+on:
+  issues:
+    types: [opened]
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo legacy

@@ -1,0 +1,17 @@
+{
+  "name": "yarn-typescript-fixture",
+  "type": "module",
+  "packageManager": "yarn@1.22.22+sha512.abcdef",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "lint": "eslint src/",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "gen:docs": "node scripts/gen-docs.mjs",
+    "gen:docs:check": "node scripts/gen-docs.mjs --check",
+    "prepare": "husky"
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "existing-workflows-fixture",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint .",
+    "format:check": "prettier --check .",
+    "build": "vite build --watch"
+  }
+}
