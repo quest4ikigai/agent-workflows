@@ -171,6 +171,7 @@ jobs:
         if: steps.prepare.outputs.proceed == 'true'
         env:
           HEAD_REF: ${{ steps.prepare.outputs.head_ref }}
+          CODEX_FINDINGS: ${{ steps.prepare.outputs.codex_findings }}
         run: node "$AW" prompt human-fix
 
       - name: Apply feedback with Claude
@@ -218,6 +219,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           PROCEED: ${{ steps.prepare.outputs.proceed }}
+          HEAD_SHA: ${{ steps.prepare.outputs.head_sha }}
           SETUP_OUTCOME: ${{ steps.setup.outcome }}
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
           CLAUDE_CONCLUSION: ${{ steps.claude.outputs.conclusion }}

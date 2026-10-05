@@ -49,7 +49,7 @@ the file documents itself.
 | --- | --- | --- | --- |
 | `model` | model | `sonnet` | Claude model for normal remediation passes. Set to `opus` to use Opus for every pass. |
 | `max_turns` | 1–500 | `30` | Claude turn limit per pass. |
-| `max_passes` | 0–10 | `3` | Automated remediation passes before escalation. `0` escalates on the first findings. Passes after `/agent-fix` or a manual `@codex review` do not count. |
+| `max_passes` | 0–10 | `3` | Automated remediation passes before escalation. `0` escalates on the first findings. A pass is consumed only when a countable remediation pushes a commit the workflow has verified; `blocked`, `no_change` and invalid results do not count, and neither do passes after `/agent-fix` or a manual `@codex review`. |
 | `timeout_minutes` | 5–360 | `90` | Job timeout. Covers remediation **and** a possible escalation, plus waiting for the Codex re-review. |
 
 ### `escalation` — one holistic audit

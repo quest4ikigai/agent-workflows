@@ -121,6 +121,24 @@ Re-running `install` is safe; it reports each file as `create`, `update`,
 A *trusted user* is listed in `trusted_users` **and** currently has write or
 admin access. Arbitrary issues and PRs are never touched.
 
+## Agent results are verified
+
+Each Claude session that may push ends with a status, and the workflow checks it
+against GitHub instead of trusting it:
+
+| Status | Means | Rejected when |
+| --- | --- | --- |
+| `fixed` (`implemented` for Path A) | changes committed and pushed; the findings or feedback are resolved | the PR head (Path A: the work branch) did not move |
+| `blocked` | a valid finding needs a product/design decision, missing information, an unsafe guess or an unavailable capability | never; it stops for human input |
+| `no_change` | no change is warranted: already resolved, outdated, duplicate, invalid or non-actionable | commits were pushed |
+
+A rejected status stops automation for human input. A remediation pass is
+consumed only when a countable remediation actually pushes a branch mutation, and
+`no_change` never marks a review clean. Remediation prompts list the PR's
+unresolved Codex inline threads, collected by the workflow, rather than relying on
+the review body. Details:
+[docs/architecture.md](docs/architecture.md#agent-results-are-verified-not-trusted).
+
 ## Security model (summary)
 
 - No secrets in this repository. Consumers pass exactly three secrets explicitly.

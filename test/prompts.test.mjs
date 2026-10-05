@@ -7,6 +7,7 @@ import {
   SCHEMAS,
   auditPrompt,
   claudeArgs,
+  codexFindingsBlock,
   existingContextDocs,
   finalFixPrompt,
   humanFixPrompt,
@@ -14,7 +15,7 @@ import {
   remediatePrompt,
 } from '../lib/runtime/prompts.mjs';
 import { parseResult, validationStatus } from '../lib/runtime/results.mjs';
-import { cleanupTemp, defaultConfig, tempDir } from './helpers.mjs';
+import { DRIFT_FINDING, cleanupTemp, defaultConfig, tempDir } from './helpers.mjs';
 
 after(cleanupTemp);
 
@@ -64,6 +65,8 @@ test('implement prompt: contract, docs, validation, branch rules', () => {
   assert.match(p, /- Only push to `claude\/issue-12-add-export`\./);
   assert.match(p, /never push to `agent-main` or `main`/);
   assert.match(p, /Do not request reviews or mention @codex/);
+  assert.match(p, /Return status "implemented" only when your changes are committed and pushed/);
+  assert.match(p, /opens a pull request only when `claude\/issue-12-add-export` has\ncommits ahead of `agent-main` on GitHub, and rejects "no_change" if you pushed\nany/);
 });
 
 test('prompts degrade gracefully without docs or validation', () => {
@@ -119,4 +122,75 @@ test('validation status mapping', () => {
   assert.equal(validationStatus('failure', ''), 'failed');
   assert.equal(validationStatus('skipped', ''), 'not-run');
   assert.equal(validationStatus(undefined, undefined), 'not-run');
+});
+
+const drift = {
+  thread: 'PRRT_drift',
+  path: 'scripts/brand/sync.mjs',
+  line: 22,
+  startLine: 20,
+  severity: 'P2',
+  title: 'Check generated public derivatives for drift',
+  latest: true,
+  replies: 1,
+  body: DRIFT_FINDING,
+};
+const ico = { thread: 'PRRT_ico', path: 'test/brand.test.mjs', line: 5, startLine: null, severity: 'P1', title: 'Cover the ICO sizes', latest: false, replies: 0, body: 'No test checks the ICO.\n````\nfence\n````' };
+const fileLevel = { thread: 'PRRT_file', path: 'README.md', line: null, startLine: null, severity: null, title: '', latest: null, replies: 2, body: 'Whole-file note.' };
+
+test('remediation prompt lists the current unresolved Codex findings even when the review body is empty', () => {
+  const common = { config, pr: 9, headRef: 'feature/x', docs: [], scriptExists: true };
+  const p = remediatePrompt({ ...common, reviewBody: '', codexFindings: { findings: [drift, ico, fileLevel], outdated: 2, omitted: 1 } });
+  assert.match(p, /LATEST REVIEW BODY:\n````\n\(empty\)\n````/);
+  assert.match(p, /CURRENT UNRESOLVED CODEX FINDINGS\n\nAn empty latest review body does not imply there are no findings\. The unresolved finding\nlist below is authoritative for the current remediation pass\./);
+  assert.match(p, /1\. scripts\/brand\/sync\.mjs:20-22\n   P2: Check generated public derivatives for drift\n   \(thread PRRT_drift, from the latest review, 1 reply by others not shown\)\n````\n/);
+  assert.ok(p.includes(DRIFT_FINDING), 'full comment text');
+  assert.match(p, /2\. test\/brand\.test\.mjs:5\n   P1: Cover the ICO sizes\n   \(thread PRRT_ico, from an earlier review\)\n`````\nNo test checks the ICO\.\n````\nfence\n````\n`````/, 'fences cannot be closed early');
+  assert.match(p, /3\. README\.md\n   \(untitled finding\)\n   \(thread PRRT_file, 2 replies by others not shown\)/);
+  assert.match(p, /2 unresolved Codex thread\(s\) are outdated .* and are not listed\./);
+  assert.match(p, /1 more finding\(s\) are not shown because of prompt size limits/);
+  assert.ok(p.indexOf('CURRENT UNRESOLVED CODEX FINDINGS') > p.indexOf('LATEST REVIEW BODY'));
+});
+
+test('findings block: none, and not collected', () => {
+  const none = codexFindingsBlock({ findings: [], outdated: 3, omitted: 0 }, 'Authoritative.');
+  assert.match(none, /None: the pull request has no unresolved, non-outdated Codex review threads\.\n3 unresolved Codex thread\(s\) are outdated/);
+  const missing = codexFindingsBlock(null, 'Authoritative.');
+  assert.match(missing, /could not collect the review threads for this run\. Read every unresolved\nCodex review thread on the pull request yourself; an empty review body does not imply\nthere are no findings\./);
+  assert.doesNotMatch(missing, /Authoritative/);
+});
+
+test('write prompts define fixed, blocked and no_change so they are hard to misread', () => {
+  const common = { config, pr: 9, headRef: 'feature/x', docs: [], scriptExists: true, codexFindings: { findings: [drift] } };
+  const prompts = {
+    remediate: remediatePrompt({ ...common, reviewBody: 'r' }),
+    'human-fix': humanFixPrompt({ ...common, actor: 'owner', feedback: 'Rename foo' }),
+    'final-fix': finalFixPrompt({ ...common, findings: '[]', auditSummary: 's' }),
+  };
+  const flat = (p) => p.replace(/\s+/g, ' ');
+  for (const [kind, p] of Object.entries(prompts)) {
+    const text = flat(p);
+    assert.ok(text.includes('Status rules (the workflow compares the pull request head on GitHub before and after this session'), kind);
+    assert.ok(text.includes('- Return "fixed" only if you changed the repository, committed the change, pushed it to `feature/x`'), kind);
+    assert.ok(text.includes('If you did not push a commit, you MUST NOT return "fixed".'), kind);
+    assert.ok(text.includes('If your reasoning concludes that a human decision is needed, return "blocked", even if you made no changes'), kind);
+    assert.ok(text.includes('- Return "no_change" only when'), kind);
+    assert.ok(text.includes('do not push commits'), kind);
+  }
+  assert.ok(flat(prompts.remediate).includes('already resolved, outdated, duplicate, invalid, or non-actionable'));
+  assert.ok(flat(prompts.remediate).includes('Never use "no_change" for a valid finding that needs a human decision; that is "blocked".'));
+  assert.ok(flat(prompts['human-fix']).includes('A Codex review is requested only after a verified push.'));
+  assert.ok(flat(prompts['final-fix']).includes('Be conservative: when unsure, return "blocked".'));
+});
+
+test('/agent-fix sees the Codex findings as its task without feedback, and as context with it', () => {
+  const common = { config, pr: 9, headRef: 'feature/x', actor: 'owner', docs: [], scriptExists: true, codexFindings: { findings: [drift] } };
+  const bare = humanFixPrompt({ ...common, feedback: '' });
+  assert.match(bare, /No feedback text followed the command\. Address the unresolved review threads on this PR,\nstarting with the current unresolved Codex findings listed below\./);
+  assert.match(bare, /these findings are the work for this fix/);
+  assert.match(bare, /1\. scripts\/brand\/sync\.mjs:20-22/);
+  const guided = humanFixPrompt({ ...common, feedback: 'Only rename foo' });
+  assert.match(guided, /The feedback above is the task\. These findings are context: address them only where the\nfeedback asks you to\./);
+  assert.ok(guided.indexOf('HUMAN FEEDBACK') < guided.indexOf('CURRENT UNRESOLVED CODEX FINDINGS'));
+  assert.match(humanFixPrompt({ ...common, feedback: '', codexFindings: null }), /could not collect the review threads/);
 });

@@ -67,6 +67,19 @@ test('prompt command writes multi-line prompt and claude_args outputs', () => {
   assert.match(r.outputs.claude_args, /^--model sonnet\n--max-turns 40\n/);
 });
 
+test('remediation prompt carries the collected Codex findings from CODEX_FINDINGS, even with an empty review body', () => {
+  const findings = { findings: [{ thread: 'PRRT_1', path: 'scripts/brand/sync.mjs', line: 22, startLine: 20, severity: 'P2', title: 'Check generated public derivatives for drift', latest: true, replies: 0, body: 'Line one\nAW_EOF_x\nname=value' }], outdated: 0, omitted: 0 };
+  const env = { AW_CONFIG: JSON.stringify(defaultConfig()), PR_NUMBER: '9', HEAD_REF: 'feature/x' };
+  const r = runMain(['prompt', 'remediate'], { event: { review: { id: 1, body: '' } }, env: { ...env, CODEX_FINDINGS: JSON.stringify(findings) } });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.outputs.prompt, /1\. scripts\/brand\/sync\.mjs:20-22\n   P2: Check generated public derivatives for drift\n/);
+  assert.ok(r.outputs.prompt.includes('Line one\nAW_EOF_x\nname=value'), 'comment text survives intact');
+  assert.match(r.outputs.claude_args, /"enum":\["fixed","blocked","no_change"\]/);
+
+  const missing = runMain(['prompt', 'remediate'], { event: { review: { id: 1, body: '' } }, env: { ...env, CODEX_FINDINGS: '' } });
+  assert.match(missing.outputs.prompt, /could not collect the review threads for this run/);
+});
+
 test('result command maps structured output to a status', () => {
   const ok = runMain(['result', 'remediate'], { event: {}, env: { RAW_RESULT: '{"status":"fixed","summary":"s","validation":"v"}' } });
   assert.equal(ok.status, 0);

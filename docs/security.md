@@ -140,6 +140,11 @@ it.
 - The origin of a Codex review (which decides whether it consumes budget) is taken
   only from `@codex review` comments posted by the PAT owner with an origin
   marker; any other request counts as `manual`.
+- Claude's structured status is not trusted on its own. agent-workflows verifies
+  claimed write outcomes against the remote PR head SHA (for Path A, the work
+  branch), so a `fixed` result that pushed nothing cannot consume budget, request
+  a review or complete automation, and Claude's `no_change` never resolves Codex
+  threads. See [architecture.md](architecture.md#agent-results-are-verified-not-trusted).
 - All state transitions happen inside a per-PR concurrency lock
   (`agent-pr-<number>`), shared by opt-in, remediation, escalation and
   `/agent-fix`, so two agents never edit one branch at once.
@@ -155,7 +160,9 @@ is never used.
 ## Prompt injection
 
 Inputs reaching Claude: the issue body (trusted author), PR descriptions and
-review comments, Codex review text, and `/agent-fix` feedback (trusted author).
+review comments, Codex review text, the unresolved Codex inline findings the
+workflow collects (only comments authored by Codex are quoted), and `/agent-fix`
+feedback (trusted author).
 Mitigations:
 
 - user text is passed through files/outputs, never interpolated into shell;

@@ -209,25 +209,82 @@ countable and passes ≥ max_passes
 otherwise                                   → remediate
 ```
 
-**Remediate:** Claude (remediation.model) addresses actionable findings, the
-workflow re-runs validation, resolves Codex threads, increments `passes` when the
-review was countable, and requests a re-review (origin=remediation). A pass that
-pushes no commits, or whose validation fails, still counts but stops for a human
-instead of requesting another review; a crashed run does not count.
+**Remediate:** Claude (remediation.model) addresses the current Codex findings.
+When it returns a verified `fixed` (see below), the workflow re-runs validation,
+resolves Codex threads, increments `passes` when the review was countable, and
+requests a re-review (origin=remediation). `blocked`, `no_change` and invalid
+results stop for a human without requesting a review.
+
+**Budget accounting:** a pass is consumed only when a countable remediation
+actually pushes a branch mutation, that is, Claude returns `fixed` and the
+workflow has verified that the PR head moved. `blocked`, `no_change`, invalid
+results and crashed runs consume nothing. A verified fix whose validation fails
+keeps its pass (the branch did change) and pauses for a human.
 
 **Escalate:** Opus runs a read-only holistic audit of the whole PR. The workflow
 verifies the audit did not push anything. `clean` → final=complete;
 `blocked` → final=blocked; `findings` → a separate Opus session applies every
-valid finding in one pass, validation runs, final=complete (or blocked). No
-further Codex review is requested — the human is the next gate.
+valid finding in one pass. Only a verified `fixed` whose validation passes ends
+final=complete; `blocked`, `no_change`, an invalid result or failed validation end
+final=blocked. No further Codex review is requested — the human is the next gate.
 
 **Resets:** `/agent-review`, the `agent-review` label and `/agent-fix` start a
 fresh budget (`passes=0`, `final=not_started`).
 
-**Stops for human input:** Claude returns `blocked`, validation fails after a
-pass, a Claude run fails, the budget is exhausted with escalation disabled, or
-escalation ends. Each stop updates the status comment and, where useful, posts a
-PR comment explaining why.
+**Stops for human input:** Claude returns `blocked` or `no_change`, Claude's
+status contradicts the branch, validation fails after a pass, a Claude run fails,
+the budget is exhausted with escalation disabled, or escalation ends. Each stop
+updates the status comment and, where useful, posts a PR comment explaining why.
+
+### Agent results are verified, not trusted
+
+Every Claude session that may push ends with a structured status.
+agent-workflows verifies claimed write outcomes against the remote PR head SHA
+(for Path A, against the work branch) before acting on them:
+
+| Status | Sessions | Means | Verified by |
+| --- | --- | --- | --- |
+| `implemented` | implementation | committed and pushed to the work branch | the work branch has commits ahead of `base_branch` |
+| `fixed` | remediation, `/agent-fix`, final fix | committed, pushed to the PR branch, and the findings or feedback being addressed are resolved | the PR head moved during the session |
+| `blocked` | all | a valid finding or request remains that needs a product/design decision, missing information, an unsafe guess or an unavailable capability | nothing: a commit is neither required nor expected |
+| `no_change` | all | no change is warranted: already resolved, outdated, duplicate, invalid or non-actionable | the branch did not move |
+
+A status that contradicts the branch (`fixed` or `implemented` with nothing
+pushed, `no_change` with commits pushed, or a head that could not be read) is an
+**invalid result**: the step fails, no pass is consumed, no review is requested,
+and the status comment asks for human input. A `blocked` result that did push
+commits says so.
+
+| Session | verified `fixed` / `implemented` | `blocked` | verified `no_change` | invalid |
+| --- | --- | --- | --- | --- |
+| Implementation | validate, open PR, request review | comment on the issue | comment on the issue | fail; no PR |
+| Remediation | validate, resolve Codex threads, count the pass, request re-review | stop for a human | stop for a human; Codex threads stay open | stop for a human |
+| `/agent-fix` | validate, fresh budget, request review | stop for a human | report that nothing changed; no review | stop for a human |
+| Final fix | validate, final=complete | final=blocked | final=blocked | final=blocked |
+
+`no_change` never declares a review clean: the workflow does not resolve Codex
+threads on Claude's word, so a human accepts or dismisses them.
+
+The check compares remote heads, so a push by someone else during a session would
+count as the session's push. The per-PR lock keeps agents from overlapping; avoid
+pushing to a PR by hand while an agent session runs on it.
+
+### Codex findings in the prompt
+
+Codex puts most findings in inline review threads, and its review body can be
+empty or boilerplate. So before normal remediation and `/agent-fix`, the workflow
+lists the PR's review threads inside the PR lock and includes in the prompt every
+**unresolved** thread opened by Codex whose code has not changed since (not
+**outdated**): path, line range, severity, title, thread ID, whether it came from
+the triggering review, and Codex's full comment text, fenced. Resolved threads are
+left out, outdated ones are counted but not listed, and replies by other users
+are counted, not quoted. The remediation prompt states that this list is
+authoritative and that an empty review body does not mean there are no findings.
+Without `/agent-fix` feedback the list is the work; with feedback it is context.
+
+The text is capped (4,000 characters per finding, 30,000 in total) because it
+travels through step outputs and environment variables. If the threads cannot be
+listed, the prompt says so and tells Claude to read them on the PR.
 
 The best possible terminal message is *"ready for human acceptance"*. The
 automation never approves, never merges, and never claims a human reviewed the

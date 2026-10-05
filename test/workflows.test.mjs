@@ -228,10 +228,10 @@ const PAT = 'AGENT_GITHUB_TOKEN';
 const REQUIRED_ENV = {
   gate: ['GITHUB_TOKEN'],
   'prompt implement': ['AW_CONFIG', 'WORK_BRANCH'],
-  'prompt remediate': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF'],
+  'prompt remediate': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF', 'CODEX_FINDINGS'],
   'prompt audit': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF'],
   'prompt final-fix': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF', 'AUDIT_FINDINGS', 'AUDIT_SUMMARY'],
-  'prompt human-fix': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF'],
+  'prompt human-fix': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF', 'CODEX_FINDINGS'],
   result: ['RAW_RESULT'],
   'preflight-implement': ['GITHUB_TOKEN', 'AW_CONFIG', 'ISSUE_NUMBER'],
   'finish-implement': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'ISSUE_NUMBER', 'PREFLIGHT', 'SETUP_OUTCOME', 'WORK_BRANCH', ...CLAUDE, ...VALIDATION],
@@ -240,9 +240,9 @@ const REQUIRED_ENV = {
   'plan-remediation': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER'],
   'finish-remediation': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'PASSES', 'COUNTABLE', 'HEAD_SHA', ...CLAUDE, ...VALIDATION],
   'finish-audit': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', ...CLAUDE],
-  'finish-final-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'AUDIT_SUMMARY', ...CLAUDE, ...VALIDATION],
+  'finish-final-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', 'AUDIT_SUMMARY', ...CLAUDE, ...VALIDATION],
   'prepare-human-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'ACTOR'],
-  'finish-human-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'PROCEED', 'SETUP_OUTCOME', ...CLAUDE, ...VALIDATION],
+  'finish-human-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', 'PROCEED', 'SETUP_OUTCOME', ...CLAUDE, ...VALIDATION],
   'remove-checkout-credentials': [],
 };
 
@@ -268,4 +268,43 @@ test('every runtime step receives exactly the inputs its command reads', () => {
     }
   }
   assert.equal(checked, 27);
+});
+
+test('write sessions are verified against the head recorded before Claude ran, and only a verified fix requests review', () => {
+  const stepsOf = (f, name) => jobSteps(jobs(read(f)).find((j) => j.startsWith(`  ${name}:`)));
+  const env = (step, name) => (step.text.match(new RegExp(`\\n {10}${name}: (.+)\\n`)) || [])[1];
+  const cases = [
+    // [workflow, job, step recording the head, finish step, Claude step, review step]
+    ['review.yml', 'remediate', 'plan', 'Finish remediation', 'claude', 'Request Codex re-review and wait'],
+    ['review.yml', 'remediate', 'plan', 'Finish consolidated fix', 'final_fix', null],
+    ['human-fix.yml', 'fix', 'prepare', 'Finish', 'claude', 'Request Codex review and wait'],
+  ];
+  for (const [f, job, recorder, finishName, claudeId, reviewName] of cases) {
+    const all = stepsOf(f, job);
+    const finish = all.find((s) => s.name === finishName);
+    const where = `${f}/${finishName}`;
+    assert.equal(env(finish, 'HEAD_SHA'), `\${{ steps.${recorder}.outputs.head_sha }}`, where);
+    assert.ok(all.findIndex((s) => s.id === recorder) < all.findIndex((s) => s.id === claudeId), `${where}: head recorded before Claude runs`);
+    assert.ok(all.indexOf(finish) > all.findIndex((s) => s.id === claudeId), where);
+    if (reviewName) {
+      const review = all.find((s) => s.name === reviewName);
+      assert.equal(review.if, `steps.${finish.id}.outputs.request_review == 'true'`, `${f}: review only after the finish step verified the fix`);
+    }
+  }
+  // The final fix ends automation; nothing after it requests a review.
+  const remediate = stepsOf('review.yml', 'remediate');
+  const afterFix = remediate.slice(remediate.findIndex((s) => s.id === 'final_fix'));
+  assert.ok(!afterFix.some((s) => /node "\$AW" review-cycle/.test(s.text)));
+});
+
+test('remediation and /agent-fix prompts receive the Codex findings collected inside the PR lock', () => {
+  const cases = [
+    ['review.yml', 'remediate', 'prompt remediate', 'plan'],
+    ['human-fix.yml', 'fix', 'prompt human-fix', 'prepare'],
+  ];
+  for (const [f, job, command, collector] of cases) {
+    const all = jobSteps(jobs(read(f)).find((j) => j.startsWith(`  ${job}:`)));
+    const prompt = all.find((s) => s.text.includes(`node "$AW" ${command}\n`));
+    assert.match(prompt.text, new RegExp(`\\n {10}CODEX_FINDINGS: \\$\\{\\{ steps\\.${collector}\\.outputs\\.codex_findings \\}\\}\\n`), f);
+  }
 });

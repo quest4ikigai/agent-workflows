@@ -241,6 +241,8 @@ secrets and labels. Open PRs keep their status comments; nothing else remains.
 | Claude step "finished without running Claude" | The Claude GitHub App token exchange rejected the run: the wrapper on the triggering ref differs from the default branch (e.g. a PR that edits the wrappers), or the app is not installed |
 | `Missing repository secret …` | Create the secret (step 4) |
 | Codex never responds | PAT owner is not connected to Codex, Codex review is not enabled for the repository, or the request is still queued; the status says "still running beyond the monitor window" |
+| Status says "Invalid remediation result" (or invalid `/agent-fix` / final-fix result) | Claude's status contradicted the branch, for example `fixed` with no pushed commit. Nothing was counted and no review was requested. Read Claude's summary in the PR comment, then fix the branch yourself or with `/agent-fix <instructions>`, or accept the finding as is |
+| Status says Claude found no change warranted | Claude returned `no_change` for the open Codex findings. Resolve the threads if you agree, or give direction with `/agent-fix <instructions>` |
 | `/agent-fix` ignored silently | Commenter is not trusted; untrusted commenters get no reply by design |
 | Label removed right after adding it | The labeler is not a trusted user; the explanation is posted on the PR |
 | Label opt-in or remediation never starts on one PR | The PR has merge conflicts: GitHub does not run `pull_request`/`pull_request_review` workflows until they are resolved |

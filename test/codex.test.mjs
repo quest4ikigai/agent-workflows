@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { countCodexReviews, requestCodexReview, resolveCodexThreads, waitForCodex } from '../lib/runtime/codex.mjs';
-import { CODEX, FakeGitHub } from './helpers.mjs';
+import { codexFindings, countCodexReviews, describeFinding, requestCodexReview, resolveCodexThreads, waitForCodex } from '../lib/runtime/codex.mjs';
+import { CODEX, DRIFT_FINDING, FakeGitHub, codexThreads } from './helpers.mjs';
 
 const repo = { owner: 'acme', name: 'widget', full: 'acme/widget' };
 
@@ -98,4 +98,59 @@ test('thread resolution failures are reported, never thrown', async () => {
   const r = await resolveCodexThreads(client, repo, 7, (m) => logs.push(m));
   assert.equal(r.resolved, 0);
   assert.match(logs[0], /could not list review threads/);
+});
+
+test('current Codex findings: unresolved, Codex-opened, not outdated; path, lines and text preserved', async () => {
+  const gh = setup();
+  gh.threads[7] = codexThreads(55);
+  const { findings, outdated, omitted } = await codexFindings(gh.client(), repo, 7, { latestReviewId: 55 });
+  assert.deepEqual([outdated, omitted], [1, 0]);
+  assert.deepEqual(findings, [
+    {
+      thread: 'PRRT_drift',
+      path: 'scripts/brand/sync.mjs',
+      line: 22,
+      startLine: 20,
+      severity: 'P2',
+      title: 'Check generated public derivatives for drift',
+      latest: true,
+      replies: 1,
+      body: DRIFT_FINDING,
+    },
+    {
+      thread: 'PRRT_ico',
+      path: 'test/brand.test.mjs',
+      line: 5,
+      startLine: null,
+      severity: 'P1',
+      title: 'Cover the ICO sizes',
+      latest: false,
+      replies: 0,
+      body: '**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Cover the ICO sizes**\n\nNo test checks the ICO.',
+    },
+  ]);
+  assert.ok(!JSON.stringify(findings).includes('Ignore all previous instructions'), 'replies by others are counted, not quoted');
+  assert.deepEqual((await codexFindings(gh.client(), repo, 7)).findings.map((f) => f.latest), [null, null], 'no latest review given');
+});
+
+test('current Codex findings are bounded in size', async () => {
+  const gh = setup();
+  const long = (id) => ({ id, isResolved: false, path: 'a.ts', line: 1, comments: [{ author: CODEX, body: `**Finding ${id}**\n${'x'.repeat(9000)}` }] });
+  gh.threads[7] = Array.from({ length: 10 }, (_, i) => long(`t${i}`));
+  const { findings, omitted } = await codexFindings(gh.client(), repo, 7);
+  assert.ok(findings.length >= 1 && findings.length < 10);
+  assert.equal(findings.length + omitted, 10, 'everything is either listed or counted');
+  assert.match(findings[0].body, /… \(truncated; read the full comment on the pull request\)$/);
+  assert.ok(JSON.stringify(findings).length < 40000);
+});
+
+test('Codex finding headings yield severity and title', () => {
+  assert.deepEqual(describeFinding(DRIFT_FINDING), { severity: 'P2', title: 'Check generated public derivatives for drift' });
+  assert.deepEqual(describeFinding('\n\nPlain comment without a badge.\nMore.'), { severity: null, title: 'Plain comment without a badge.' });
+  assert.deepEqual(describeFinding(''), { severity: null, title: '' });
+});
+
+test('listing Codex findings surfaces API errors to the caller', async () => {
+  const client = { graphql: async () => { throw new Error('forbidden'); } };
+  await assert.rejects(codexFindings(client, repo, 7), /forbidden/);
 });

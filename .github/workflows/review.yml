@@ -229,6 +229,7 @@ jobs:
         if: steps.plan.outputs.mode == 'remediate'
         env:
           HEAD_REF: ${{ steps.plan.outputs.head_ref }}
+          CODEX_FINDINGS: ${{ steps.plan.outputs.codex_findings }}
         run: node "$AW" prompt remediate
 
       - name: Remediate Codex findings with Claude
@@ -380,6 +381,7 @@ jobs:
         if: always() && steps.finish_audit.outputs.run_fix == 'true' && env.AW != ''
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ steps.plan.outputs.head_sha }}
           AUDIT_SUMMARY: ${{ steps.finish_audit.outputs.summary }}
           CLAUDE_OUTCOME: ${{ steps.final_fix.outcome }}
           CLAUDE_CONCLUSION: ${{ steps.final_fix.outputs.conclusion }}

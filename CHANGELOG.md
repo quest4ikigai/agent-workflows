@@ -3,6 +3,30 @@
 All notable changes are documented here. Releases follow
 [semantic versioning](docs/versioning.md); consumers pin `@vX` or `@vX.Y.Z`.
 
+## Unreleased
+
+Claude's structured results are verified against GitHub instead of trusted. In
+Curious Workbench, remediation returned `fixed` for a finding it had deliberately
+left for a design decision, pushed nothing, and still consumed a remediation pass.
+
+- Remediation and the final fix gain `no_change` next to `fixed` and `blocked`
+  (Path A and `/agent-fix` already had it). The prompts define each status: `fixed`
+  requires a pushed commit, and a needed human decision is `blocked`, even with no
+  changes.
+- Every write session's status is checked against the remote branch: `fixed` or
+  `implemented` without a pushed commit, or `no_change` with one, is an invalid
+  result that stops for human input. This covers Path A, remediation, `/agent-fix`
+  and the final fix, which can no longer declare automation complete without a
+  verified push. `/agent-fix` requests a Codex review only after a verified push.
+- A remediation pass is consumed only when a countable remediation actually pushes
+  a branch mutation. `blocked`, `no_change` and invalid results consume nothing.
+- `no_change` never declares a review clean: remediation stops for a human and
+  leaves the Codex threads open, and the final fix ends blocked.
+- The workflow collects the PR's unresolved, non-outdated Codex inline review
+  threads and lists them in the remediation and `/agent-fix` prompts, so an empty
+  review body no longer reads as "no findings".
+- No permission, secret, wrapper or configuration changes.
+
 ## 1.0.0 — 2026-10-05
 
 Initial version, extracted and generalized from the mealie-mcp-server agent
