@@ -174,3 +174,7 @@ npm test          # node:test, no dependencies, no network
 CI also runs [actionlint](https://github.com/rhysd/actionlint) over the reusable
 workflows and over wrappers rendered to call them locally, and a self-test that
 fetches the runtime at the workflow commit exactly as consumers do.
+
+## License
+
+[MIT](LICENSE)
