@@ -73,7 +73,7 @@ the file documents itself.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `wait_minutes` | 0–60 | `15` | How long a job keeps polling for a Codex review after requesting one, to keep the status comment current. Reviews that arrive later still trigger remediation. `0` requests and exits immediately (cheapest). |
+| `wait_minutes` | 0–60 | `15` | How long the requesting job also polls for the Codex result. Completion is recorded from Codex's own events either way, so `0` (request and exit immediately; no runner waits) loses nothing: the status reads "awaiting completion signal" until Codex reports. An expired window is reported as the end of monitoring, not as a Codex failure. |
 
 ### `setup` — environment before Claude starts
 

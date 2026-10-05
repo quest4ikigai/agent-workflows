@@ -4,6 +4,7 @@
 #   - a trusted user adds the "agent-review" label to a PR (Path B opt-in)
 #   - a trusted user comments "/agent-review" on a PR (start or restart review)
 #   - Codex submits a review on an opted-in PR (remediation / escalation)
+#   - Codex edits its review summary or posts its clean result (completion)
 #
 # This wrapper contains no repository policy. Configure behaviour in
 # .github/agent/config.yml. Regenerate with `agent-workflows install`.
@@ -17,17 +18,22 @@ on:
   pull_request_review:
     types: [submitted]
   issue_comment:
-    types: [created]
+    types: [created, edited]
 
 permissions: {}
 
 jobs:
   review:
-    # Cheap pre-filter so unrelated events never start a runner.
+    # Cheap pre-filter so unrelated events never start a runner. The reusable
+    # workflow re-checks everything, including that a comment is Codex's own.
     if: >-
       (github.event_name == 'pull_request' && github.event.label.name == 'agent-review') ||
       (github.event_name == 'pull_request_review' && startsWith(github.event.review.user.login, 'chatgpt-codex-connector')) ||
-      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && startsWith(github.event.comment.body, '/agent-review'))
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && (
+        (github.event.action == 'created' && startsWith(github.event.comment.body, '/agent-review')) ||
+        (github.event.comment.user.type == 'Bot' && startsWith(github.event.comment.user.login, 'chatgpt-codex-connector') && (
+          contains(github.event.comment.body, '<!-- codex-pull-request-review-summary -->') ||
+          contains(github.event.comment.body, 'find any major issues')))))
     uses: __AW_REPO__/.github/workflows/review.yml@__AW_REF__
     permissions:
       contents: read

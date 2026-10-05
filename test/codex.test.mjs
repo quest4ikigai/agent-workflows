@@ -1,8 +1,20 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { codexFindings, countCodexReviews, describeFinding, requestCodexReview, resolveCodexThreads, waitForCodex } from '../lib/runtime/codex.mjs';
-import { CODEX, DRIFT_FINDING, FakeGitHub, codexThreads } from './helpers.mjs';
+import {
+  codexFindings,
+  commitMatches,
+  countCodexReviews,
+  describeFinding,
+  hasCodexReviewOf,
+  parseCleanResult,
+  parseCompletionSignal,
+  parseReviewSummary,
+  requestCodexReview,
+  resolveCodexThreads,
+  waitForCodex,
+} from '../lib/runtime/codex.mjs';
+import { CODEX, DRIFT_FINDING, FakeGitHub, cleanResult, codexSummary, codexThreads, user } from './helpers.mjs';
 
 const repo = { owner: 'acme', name: 'widget', full: 'acme/widget' };
 
@@ -53,9 +65,13 @@ test('a new Codex review means findings', async () => {
 test('a 👍 reaction from Codex on the request means clean', async () => {
   const gh = setup();
   const request = await requestCodexReview({ client: gh.client(), agentClient: gh.client('pat-token'), repo, pr: 7, origin: 'initial' });
-  gh.reactions[request.requestId] = [{ user: { login: 'someone' }, content: '+1' }];
-  assert.equal(await wait(gh, request), 'pending', 'reactions from others do not count');
-  gh.reactions[request.requestId].push({ user: { login: CODEX }, content: '+1' });
+  gh.reactions[request.requestId] = [
+    { user: user('someone'), content: '+1' },
+    { user: { login: 'chatgpt-codex-connector-fan', type: 'User' }, content: '+1' },
+    { user: { login: CODEX, type: 'Bot' }, content: 'eyes' },
+  ];
+  assert.equal(await wait(gh, request), 'pending', 'reactions from others, or other reactions, do not count');
+  gh.reactions[request.requestId].push({ user: user(CODEX), content: '+1' });
   assert.equal(await wait(gh, request), 'clean');
 });
 
@@ -153,4 +169,108 @@ test('Codex finding headings yield severity and title', () => {
 test('listing Codex findings surfaces API errors to the caller', async () => {
   const client = { graphql: async () => { throw new Error('forbidden'); } };
   await assert.rejects(codexFindings(client, repo, 7), /forbidden/);
+});
+
+// Completion signals --------------------------------------------------------------------
+
+test('review summary: the Code Review row is read, never the Security Review row', () => {
+  assert.deepEqual(parseReviewSummary(codexSummary()), { completed: true, status: 'Completed', commit: '4d1c0e3', completedAt: '2026-10-05T18:52:10Z' });
+  const running = parseReviewSummary(codexSummary({ code: '⏳ **In progress** <relative-time datetime="2026-10-05T18:50:00Z">now</relative-time>' }));
+  assert.deepEqual(running, { completed: false, status: 'In progress', commit: '4d1c0e3', completedAt: null }, 'a completed Security Review does not complete the Code Review');
+  const swapped = codexSummary().split('\n');
+  [swapped[7], swapped[8]] = [swapped[8], swapped[7]];
+  assert.equal(parseReviewSummary(swapped.join('\n')).commit, '4d1c0e3', 'rows are found by name, not position');
+  const reordered = codexSummary()
+    .split('\n')
+    .map((line) => {
+      if (!line.startsWith('|')) return line;
+      const c = line.split('|');
+      [c[2], c[3]] = [c[3], c[2]];
+      return c.join('|');
+    })
+    .join('\n');
+  assert.deepEqual(parseReviewSummary(reordered), parseReviewSummary(codexSummary()), 'columns are found by header name');
+  for (const status of ['Queued', '❌ **Failed**', 'Not completed', '']) {
+    assert.equal(parseReviewSummary(codexSummary({ code: status })).completed, false, status);
+  }
+});
+
+test('review summary: anything not reliably parseable is ignored, never guessed', () => {
+  const ignored = (body) => parseReviewSummary(body).ignored;
+  assert.match(ignored(codexSummary().replace('<!-- codex-pull-request-review-summary -->', '')), /not a Codex review summary/);
+  assert.match(ignored('<!-- codex-pull-request-review-summary -->\nCode Review completed for 4d1c0e3'), /no Review\/Status\/Commit table/);
+  assert.match(ignored(codexSummary().replace('📝 **Code Review**', '📝 **Style Review**')), /no Code Review row/);
+  const twice = codexSummary().replace('| 🔒 **Security Review**', '| 📝 **Code Review** | ✅ **Completed** | `1234567` | x |\n| 🔒 **Security Review**');
+  assert.match(ignored(twice), /more than one Code Review row/);
+  assert.match(ignored(codexSummary({ commit: 'abc' })), /no commit/, 'shorter than 7 characters');
+  assert.match(ignored(codexSummary({ commit: 'not-a-sha' })), /no commit/);
+  assert.match(ignored(codexSummary().replace('| Manual request |', '|')), /does not match the table header/);
+  assert.match(ignored(''), /not a Codex review summary/);
+});
+
+test('clean-result comment: clean, with the reviewed commit', () => {
+  assert.deepEqual(parseCleanResult(cleanResult()), { clean: true, commit: '4d1c0e3164' });
+  assert.deepEqual(parseCleanResult("Codex Review: Didn't find any major issues.\n\nReviewed commit: `4D1C0E3164`"), { clean: true, commit: '4d1c0e3164' });
+  assert.deepEqual(parseCleanResult('Codex Review: Didn’t find any major issues.\n\nReviewed commit: 4d1c0e3'), { clean: true, commit: '4d1c0e3' });
+  assert.deepEqual(parseCleanResult("Codex Review: Didn't find any major issues."), { clean: true, commit: null });
+  assert.ok(parseCleanResult('Codex found two major issues.').ignored);
+  assert.ok(parseCleanResult('Did it find any major issues?').ignored);
+});
+
+test('completion signals come only from the Codex bot account', () => {
+  const summary = codexSummary();
+  const at = { created_at: '2026-10-05T18:53:00Z', updated_at: '2026-10-05T18:52:30Z' };
+  assert.deepEqual(parseCompletionSignal({ body: summary, user: user(CODEX), ...at }), { source: 'summary', completed: true, commit: '4d1c0e3', at: '2026-10-05T18:52:10Z' });
+  assert.deepEqual(parseCompletionSignal({ body: cleanResult(), user: user(CODEX), ...at }), { source: 'clean-comment', completed: true, commit: '4d1c0e3164', at: '2026-10-05T18:53:00Z' });
+  const impostors = [
+    user('owner'), // a human pasting the text
+    user('dependabot[bot]'), // another app
+    { login: 'chatgpt-codex-connector-fan', type: 'User' }, // a look-alike human login
+    { login: 'chatgpt-codex-connector[bot]', type: 'User' },
+    { login: 'chatgpt-codex-connector-evil[bot]', type: 'Bot' },
+    { login: 'chatgpt-codex-connector', type: 'Bot' },
+    undefined,
+  ];
+  for (const who of impostors) {
+    for (const body of [summary, cleanResult()]) {
+      assert.match(parseCompletionSignal({ body, user: who, ...at }).ignored, /is not the Codex bot/, JSON.stringify(who));
+    }
+  }
+  assert.match(parseCompletionSignal({ body: codexSummary({ code: 'In progress' }), user: user(CODEX) }).ignored, /"In progress", not completed/);
+  assert.match(parseCompletionSignal({ body: "Codex Review: Didn't find any major issues.", user: user(CODEX) }).ignored, /names no reviewed commit/);
+  assert.match(parseCompletionSignal({ body: 'Thanks for the update!', user: user(CODEX) }).ignored, /not a Codex clean-result comment/);
+  assert.match(parseCompletionSignal(null).ignored, /no comment/);
+});
+
+test('commit prefixes identify a SHA only with at least 7 hex characters', () => {
+  const sha = '4d1c0e3164fe92828c917f20da980d75d54bd293';
+  assert.equal(commitMatches('4d1c0e3', sha), true);
+  assert.equal(commitMatches('4D1C0E3164', sha), true);
+  assert.equal(commitMatches(sha, sha), true);
+  assert.equal(commitMatches('4d1c0e', sha), false, 'too short');
+  assert.equal(commitMatches('4d1c0e4', sha), false);
+  assert.equal(commitMatches('4d1c0e3z', sha), false);
+  assert.equal(commitMatches(null, sha), false);
+  assert.equal(commitMatches('4d1c0e3', null), false);
+});
+
+test('polling: a clean-result comment counts only from the Codex bot and for the requested commit', async () => {
+  const sha = '4d1c0e3164fe92828c917f20da980d75d54bd293';
+  const gh = setup();
+  const request = await requestCodexReview({ client: gh.client(), agentClient: gh.client('pat-token'), repo, pr: 7, origin: 'initial' });
+  gh.addComment(7, cleanResult('4d1c0e3164'), 'chatgpt-codex-connector-fan');
+  gh.addComment(7, cleanResult('cf789db000'), CODEX);
+  assert.equal(await wait(gh, request, { reviewSha: sha }), 'pending', 'look-alike author, or another commit');
+  gh.addComment(7, cleanResult('4d1c0e3164'), CODEX);
+  assert.equal(await wait(gh, request, { reviewSha: sha }), 'clean');
+});
+
+test('formal Codex reviews of a commit, optionally since a time', async () => {
+  const gh = setup();
+  gh.addReview(7, CODEX, 'findings', { commit_id: 'a'.repeat(40), submitted_at: '2026-10-05T18:00:00Z' });
+  gh.addReview(7, 'human-reviewer', 'lgtm', { commit_id: 'b'.repeat(40), submitted_at: '2026-10-05T19:00:00Z' });
+  const client = gh.client();
+  assert.equal(await hasCodexReviewOf(client, repo, 7, 'a'.repeat(40)), true);
+  assert.equal(await hasCodexReviewOf(client, repo, 7, 'a'.repeat(40), { since: '2026-10-05T18:30:00Z' }), false, 'reviews before the request do not count');
+  assert.equal(await hasCodexReviewOf(client, repo, 7, 'b'.repeat(40)), false, 'only Codex reviews count');
 });

@@ -80,6 +80,9 @@ export function defaultConfig(overrides = '', repo = { defaultBranch: 'main', ow
 export const BOT = 'github-actions[bot]';
 export const CODEX = 'chatgpt-codex-connector[bot]';
 
+/** A REST user object; "[bot]" logins are app bot accounts, as on GitHub. */
+export const user = (login) => ({ login, type: typeof login === 'string' && login.endsWith('[bot]') ? 'Bot' : 'User' });
+
 export class FakeGitHub {
   constructor({ repo = 'acme/widget', defaultBranch = 'main' } = {}) {
     this.repo = repo;
@@ -122,7 +125,7 @@ export class FakeGitHub {
       user: { login: 'owner' },
       base: { ref: this.defaultBranch },
       ...pr,
-      head: { repo: { full_name: this.repo }, sha: 'aaaaaaa1111111', ...pr.head },
+      head: { repo: { full_name: this.repo }, sha: 'aaaaaaa111111111111111111111111111111111', ...pr.head },
     };
     this.pulls[pr.number] = full;
     if (!this.branches[full.head.ref]) this.branches[full.head.ref] = { protected: false };
@@ -130,13 +133,14 @@ export class FakeGitHub {
   }
 
   addComment(issue, body, login, extra = {}) {
-    const c = { id: this.nextId++, issue: Number(issue), body, user: { login }, created_at: this.now(), ...extra };
+    const created = this.now();
+    const c = { id: this.nextId++, issue: Number(issue), body, user: user(login), created_at: created, updated_at: created, ...extra };
     this.comments.push(c);
     return c;
   }
 
-  addReview(pr, login = CODEX, body = 'Codex review') {
-    const review = { id: this.nextId++, user: { login }, body, state: 'COMMENTED' };
+  addReview(pr, login = CODEX, body = 'Codex review', extra = {}) {
+    const review = { id: this.nextId++, user: user(login), body, state: 'COMMENTED', submitted_at: this.now(), ...extra };
     (this.reviews[pr] ||= []).push(review);
     return review;
   }
@@ -231,6 +235,7 @@ export class FakeGitHub {
       if (!c) return notFound;
       if (c.user.login !== login) return { status: 403, data: { message: 'cannot edit' } };
       c.body = body.body;
+      c.updated_at = this.now();
       return { data: c };
     }
     if ((m = rest.match(/^labels\/(.+)$/))) return this.labels.has(decodeURIComponent(m[1])) ? { data: { name: m[1] } } : notFound;
@@ -362,4 +367,110 @@ export function codexThreads(reviewId) {
       comments: [{ author: CODEX, body: '**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Cover the ICO sizes**\n\nNo test checks the ICO.', review: 1 }],
     },
   ];
+}
+
+// Codex completion-signal fixtures -------------------------------------------------------
+
+/**
+ * Codex's persistent review summary comment, in the format observed on
+ * Curious Workbench PR #17. `code`/`security` are the rows' Status cells.
+ */
+export function codexSummary({
+  code = '✅ **Completed** <relative-time datetime="2026-10-05T18:52:10Z" class="no-wrap">Oct 5, 2026, 6:52 PM UTC</relative-time>',
+  commit = '4d1c0e3',
+  security = '✅ **Completed** <relative-time datetime="2026-10-05T18:40:00Z" class="no-wrap">Oct 5, 2026, 6:40 PM UTC</relative-time>',
+  securityCommit = 'cf789db',
+} = {}) {
+  return [
+    '<!-- codex-pull-request-review-summary -->',
+    '<!-- codex-security-review:v1 {"status":"completed","findings":0} -->',
+    '',
+    '## Codex Review Summary',
+    '',
+    '| Review | Status | Commit | Review trigger |',
+    '| --- | --- | --- | --- |',
+    `| 📝 **Code Review** | ${code} | \`${commit}\` | Manual request |`,
+    `| 🔒 **Security Review** | ${security} | \`${securityCommit}\` | PR opened |`,
+    '',
+    '<sub>ℹ️ About Codex in GitHub</sub>',
+  ].join('\n');
+}
+
+/** Codex's clean-result comment, as observed. */
+export const cleanResult = (commit = '4d1c0e3164') =>
+  `Codex Review: Didn't find any major issues. Already looking forward to the next diff.\n\n**Reviewed commit:** \`${commit}\`\n\n<details> <summary>ℹ️ About Codex in GitHub</summary></details>`;
+
+// GitHub Actions expressions -------------------------------------------------------------
+
+/**
+ * Evaluate the subset of the GitHub Actions expression language that wrapper
+ * `if:` filters use: property paths, string/null/boolean literals, ( ), !, ==,
+ * !=, &&, || and startsWith/contains/endsWith. Like GitHub, string comparison
+ * and the functions ignore case, and missing properties are null.
+ */
+export function evaluateExpression(expression, context) {
+  const tokens = expression.match(/'(?:[^']|'')*'|\|\||&&|==|!=|[()!,]|[A-Za-z_][A-Za-z0-9_.-]*|\S/g);
+  let at = 0;
+  const peek = () => tokens[at];
+  const take = (expected) => {
+    const t = tokens[at++];
+    if (expected && t !== expected) throw new Error(`expected ${expected}, got ${t}`);
+    return t;
+  };
+  const str = (v) => (v === null || v === undefined ? '' : String(v)).toLowerCase();
+  const truthy = (v) => !(v === null || v === undefined || v === false || v === 0 || v === '');
+  const equal = (a, b) => (typeof a === 'string' && typeof b === 'string' ? a.toLowerCase() === b.toLowerCase() : (a ?? null) === (b ?? null));
+  const fns = {
+    startswith: (a, b) => str(a).startsWith(str(b)),
+    endswith: (a, b) => str(a).endsWith(str(b)),
+    contains: (a, b) => str(a).includes(str(b)),
+  };
+  const primary = () => {
+    const t = take();
+    if (t === '(') {
+      const v = or();
+      take(')');
+      return v;
+    }
+    if (t.startsWith("'")) return t.slice(1, -1).replace(/''/g, "'");
+    if (t === 'null') return null;
+    if (t === 'true' || t === 'false') return t === 'true';
+    if (peek() === '(') {
+      take('(');
+      const args = [or()];
+      while (peek() === ',') take(',') && args.push(or());
+      take(')');
+      const fn = fns[t.toLowerCase()];
+      if (!fn) throw new Error(`unsupported function ${t}`);
+      return fn(...args);
+    }
+    return t.split('.').reduce((v, k) => (v === null || v === undefined ? null : v[k] ?? null), context);
+  };
+  const comparison = () => {
+    const left = primary();
+    if (peek() === '==' || peek() === '!=') return take() === '==' ? equal(left, primary()) : !equal(left, primary());
+    return left;
+  };
+  const unary = () => (peek() === '!' ? (take(), !truthy(unary())) : comparison());
+  const and = () => {
+    let v = unary();
+    while (peek() === '&&') {
+      take();
+      const r = unary();
+      v = truthy(v) ? r : v;
+    }
+    return v;
+  };
+  const or = () => {
+    let v = and();
+    while (peek() === '||') {
+      take();
+      const r = and();
+      v = truthy(v) ? v : r;
+    }
+    return v;
+  };
+  const value = or();
+  if (at !== tokens.length) throw new Error(`unexpected ${tokens[at]}`);
+  return truthy(value);
 }

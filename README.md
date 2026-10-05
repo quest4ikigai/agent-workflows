@@ -117,9 +117,25 @@ Re-running `install` is safe; it reports each file as `create`, `update`,
 | Comment `/agent-review` on a PR | trusted user | Start or restart the review cycle (fresh budget) |
 | Codex submits a review on an opted-in PR | Codex | Remediation or escalation |
 | Comment `/agent-fix <feedback>` on a PR | trusted user | Claude applies the feedback, then Codex re-reviews |
+| Codex edits its review summary or posts "Didn't find any major issues" | Codex | The completed review is recorded in the status comment |
 
 A *trusted user* is listed in `trusted_users` **and** currently has write or
 admin access. Arbitrary issues and PRs are never touched.
+
+## Review status
+
+Each opted-in PR has one **Agent review status** comment, the authoritative
+status of the automation: which commit Codex was asked to review and when, whether
+Codex has reported the review complete, the result (no actionable findings,
+actionable findings, or completed for a commit that is no longer the head), the
+remediation budget and the final audit.
+
+Codex completion is event-driven. Findings arrive as a pull request review and
+start remediation; a clean result arrives as Codex's own comments, which the
+workflow accepts only from the Codex bot and only for the exact commit it
+requested and that is still the head. With `codex.wait_minutes: 0` no runner
+waits, and the status says "awaiting completion signal" until Codex reports. If
+Codex never does, comment `/agent-review` to request a new review.
 
 ## Agent results are verified
 

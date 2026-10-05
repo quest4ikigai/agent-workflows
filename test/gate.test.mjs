@@ -11,7 +11,8 @@ import {
   loadRepoConfig,
   parseCommand,
 } from '../lib/runtime/gate.mjs';
-import { BOT, CODEX, FakeGitHub, defaultConfig } from './helpers.mjs';
+import { renderState } from '../lib/runtime/state.mjs';
+import { BOT, CODEX, FakeGitHub, cleanResult, codexSummary, defaultConfig, user } from './helpers.mjs';
 
 const repo = { owner: 'acme', name: 'widget', full: 'acme/widget' };
 
@@ -225,6 +226,15 @@ test('review: /agent-review from trusted users; strangers get no reply', async (
   );
 });
 
+test('review: an edited /agent-review comment is not a new command', async () => {
+  const client = reviewWorld().client();
+  const comment = (action) => ({ eventName: 'issue_comment', event: { action, issue: { number: 10, pull_request: {} }, comment: { body: '/agent-review', user: user('owner') } } });
+  assert.equal((await gateReview({ client, repo, config: cfg(), ...comment('created') })).action, 'start');
+  const edited = await gateReview({ client, repo, config: cfg(), ...comment('edited') });
+  assert.equal(edited.action, 'none');
+  assert.equal(edited.refusal, undefined);
+});
+
 test('review: trusted opt-in on an ineligible PR is explained', async () => {
   const gh = reviewWorld();
   gh.addPull({ number: 12, head: { ref: 'x', repo: { full_name: 'mallory/widget' } } });
@@ -253,4 +263,75 @@ test('human-fix: refuses protected or base branches with an explanation', async 
   const d = await gateHumanFix({ client: gh.client(), repo, config: cfg(), event: { issue: { number: 10, pull_request: {} }, comment: { body: '/agent-fix x', user: { login: 'owner' } } } });
   assert.equal(d.action, 'none');
   assert.match(d.refusal.message, /protected/);
+});
+
+// Codex completion signals -----------------------------------------------------------------
+
+const SHA = '4d1c0e3164fe92828c917f20da980d75d54bd293';
+
+function completionWorld({ review = { status: 'requested' }, labelBy = BOT } = {}) {
+  const gh = reviewWorld();
+  if (labelBy) gh.labelEvent(10, 'agent-review', labelBy);
+  const tracked = review && { sha: SHA, origin: 'human-fix', requestedAt: '2026-10-05T18:46:00Z', requestId: 77, completedAt: null, ...review };
+  gh.addComment(10, renderState({ passes: 1, final: 'not_started', review: tracked, maxPasses: 3, stage: 'seed' }), BOT);
+  return gh;
+}
+
+const codexComment = (body, { login = CODEX, action = 'edited', number = 10 } = {}) => ({
+  eventName: 'issue_comment',
+  event: { action, issue: { number, pull_request: {} }, comment: { id: 555, body, user: typeof login === 'string' ? user(login) : login, updated_at: '2026-10-05T18:52:30Z' } },
+});
+
+test('completion: a Codex summary edit or clean result for the awaited commit records the completion', async () => {
+  const client = completionWorld().client();
+  const summary = await gateReview({ client, repo, config: cfg(), ...codexComment(codexSummary()) });
+  assert.deepEqual([summary.action, summary.prNumber], ['complete', 10]);
+  assert.equal(summary.refusal, undefined);
+  const clean = await gateReview({ client, repo, config: cfg(), ...codexComment(cleanResult(), { action: 'created' }) });
+  assert.equal(clean.action, 'complete');
+});
+
+test('completion: the same text from anyone but the Codex bot is ignored without a reply', async () => {
+  const client = completionWorld().client();
+  for (const login of ['owner', 'dependabot[bot]', { login: 'chatgpt-codex-connector-fan', type: 'User' }, { login: 'chatgpt-codex-connector-evil[bot]', type: 'Bot' }]) {
+    for (const body of [codexSummary(), cleanResult()]) {
+      const d = await gateReview({ client, repo, config: cfg(), ...codexComment(body, { login, action: 'created' }) });
+      assert.equal(d.action, 'none', JSON.stringify(login));
+      assert.equal(d.refusal, undefined);
+      assert.match(d.reason, /is not the Codex bot/);
+    }
+  }
+});
+
+test('completion: unfinished, uncorrelated or redundant signals start no job', async () => {
+  const cases = [
+    [completionWorld(), codexSummary({ code: '⏳ **In progress**' }), /not completed/],
+    [completionWorld(), 'Codex is reviewing this pull request.', /not a Codex clean-result comment/],
+    [completionWorld(), codexSummary({ commit: 'cf789db' }), /the review being tracked is for 4d1c0e3/],
+    [completionWorld({ review: null }), codexSummary(), /records no Codex review request/],
+    [completionWorld({ review: { status: 'clean' } }), codexSummary(), /already recorded as clean/],
+    [completionWorld({ review: { status: 'findings' } }), cleanResult(), /already recorded as findings/],
+    [completionWorld({ labelBy: null }), codexSummary(), /does not carry the agent-review label/],
+    [completionWorld({ labelBy: 'reader' }), codexSummary(), /untrusted user/],
+  ];
+  for (const [gh, body, reason] of cases) {
+    const d = await gateReview({ client: gh.client(), repo, config: cfg(), ...codexComment(body) });
+    assert.equal(d.action, 'none', String(reason));
+    assert.match(d.reason, reason);
+  }
+  const fork = completionWorld();
+  fork.addPull({ number: 12, head: { ref: 'x', repo: { full_name: 'mallory/widget' } }, labels: [{ name: 'agent-review' }] });
+  assert.match((await gateReview({ client: fork.client(), repo, config: cfg(), ...codexComment(codexSummary(), { number: 12 }) })).reason, /fork/);
+  const plainIssue = await gateReview({ client: fork.client(), repo, config: cfg(), eventName: 'issue_comment', event: { action: 'edited', issue: { number: 3 }, comment: { body: codexSummary(), user: user(CODEX) } } });
+  assert.match(plainIssue.reason, /not on a pull request/);
+});
+
+test('completion: a formal Codex review of the awaited commit leaves the next step to that review', async () => {
+  const gh = completionWorld();
+  gh.addReview(10, CODEX, 'findings', { commit_id: SHA, submitted_at: '2026-10-05T18:40:00Z' });
+  assert.equal((await gateReview({ client: gh.client(), repo, config: cfg(), ...codexComment(codexSummary()) })).action, 'complete', 'a review from before the request does not count');
+  gh.addReview(10, CODEX, 'findings', { commit_id: SHA, submitted_at: '2026-10-05T18:51:00Z' });
+  const d = await gateReview({ client: gh.client(), repo, config: cfg(), ...codexComment(codexSummary()) });
+  assert.equal(d.action, 'none');
+  assert.match(d.reason, /that review drives remediation/);
 });

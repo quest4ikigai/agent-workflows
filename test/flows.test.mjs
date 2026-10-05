@@ -7,9 +7,23 @@ import * as flows from '../lib/runtime/flows.mjs';
 import { run } from '../lib/runtime/main.mjs';
 import { parseState, renderState } from '../lib/runtime/state.mjs';
 import { requestBody } from '../lib/runtime/codex.mjs';
-import { BOT, CODEX, DRIFT_FINDING, FakeGitHub, cleanupTemp, codexThreads, defaultConfig, fakeContext } from './helpers.mjs';
+import {
+  BOT,
+  CODEX,
+  DRIFT_FINDING,
+  FakeGitHub,
+  cleanResult,
+  cleanupTemp,
+  codexSummary,
+  codexThreads,
+  defaultConfig,
+  fakeContext,
+  user,
+} from './helpers.mjs';
 
 after(cleanupTemp);
+
+const HEAD = 'abc1234def0123456789abcdef0123456789abcd';
 
 const ok = (status, extra = {}) => JSON.stringify({ status, summary: `summary for ${status}`, validation: 'ran validate.sh: passed', ...extra });
 const claudeOk = { claudeOutcome: 'success', claudeConclusion: 'success' };
@@ -213,7 +227,7 @@ test('PR title strips the trigger prefix', () => {
 
 function prWorld({ labelBy = BOT, passes = 0, final = 'not_started', config } = {}) {
   const gh = new FakeGitHub();
-  gh.addPull({ number: 9, head: { ref: 'feature/x', sha: 'abc1234def' } });
+  gh.addPull({ number: 9, head: { ref: 'feature/x', sha: HEAD } });
   if (labelBy) gh.labelEvent(9, 'agent-review', labelBy);
   const ctx = fakeContext(gh, { config });
   if (passes !== null) gh.addComment(9, renderState({ passes, final, maxPasses: 3, stage: 'seed' }), BOT);
@@ -224,7 +238,7 @@ test('review cycle: clean review marks the PR ready for human acceptance', async
   const { gh, ctx } = prWorld();
   gh.onPoll = (g) => {
     const req = g.comments.filter((c) => c.body.startsWith('@codex review')).at(-1);
-    if (req && !g.reactions[req.id]) g.reactions[req.id] = [{ user: { login: CODEX }, content: '+1' }];
+    if (req && !g.reactions[req.id]) g.reactions[req.id] = [{ user: user(CODEX), content: '+1' }];
   };
   await flows.reviewCycle(ctx, { pr: 9, origin: 'initial' });
   assert.equal(ctx.outputs.values.result, 'clean');
@@ -252,12 +266,17 @@ test('review cycle: findings and timeouts are recorded', async () => {
   assert.match(stateOf(pending.gh, 9).body, /beyond the 1-minute monitor window/);
 });
 
-test('review cycle: wait_minutes 0 requests without waiting', async () => {
+test('review cycle: wait_minutes 0 records the exact request and exits without waiting', async () => {
   const { gh, ctx } = prWorld({ config: defaultConfig('codex:\n  wait_minutes: 0\n') });
-  await flows.reviewCycle(ctx, { pr: 9, origin: 'initial' });
+  await flows.reviewCycle(ctx, { pr: 9, origin: 'human-fix' });
   assert.equal(ctx.outputs.values.result, 'requested');
-  assert.match(stateOf(gh, 9).body, /Codex initial review requested/);
-  assert.ok(!gh.calls.some((c) => c.path.includes('/reactions')), 'no polling');
+  const request = gh.issueComments(9).find((c) => c.body.startsWith('@codex review'));
+  const state = stateOf(gh, 9);
+  assert.deepEqual(state.review, { sha: HEAD, status: 'requested', origin: 'human-fix', requestedAt: request.created_at, requestId: request.id, completedAt: null });
+  assert.match(state.body, /\*\*Stage:\*\* Codex review after owner-requested fix requested; awaiting completion signal\.\n\*\*Codex review:\*\* Awaiting completion signal\n\*\*Commit:\*\* `abc1234`\n\*\*Requested:\*\* 2026-10-01 00:00 UTC \(review after owner-requested fix\)/);
+  assert.match(state.body, /No Codex completion signal has been received yet, and no runner waits for one/);
+  assert.doesNotMatch(state.body, /timed out|timeout|beyond the/i);
+  assert.ok(!gh.calls.some((c) => c.path.includes('/reactions') || c.path.endsWith('/reviews')), 'no polling');
 });
 
 // Path B opt-in --------------------------------------------------------------------------------
@@ -354,7 +373,7 @@ const remediationInputs = (extra = {}) => ({
   pr: 9,
   passes: '1',
   countable: 'true',
-  headSha: 'abc1234def',
+  headSha: HEAD,
   rawResult: ok('fixed'),
   validationOutcome: 'success',
   validationResult: '',
@@ -547,7 +566,7 @@ const audit = (status, findings = []) => JSON.stringify({ status, summary: `audi
 test('audit: clean completes automation and resolves threads', async () => {
   const { gh, ctx } = prWorld({ passes: 3, final: 'running' });
   gh.threads[9] = [{ id: 't1', isResolved: false, authors: [CODEX] }];
-  assert.equal(await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: 'abc1234def', rawResult: audit('clean') }), 0);
+  assert.equal(await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, rawResult: audit('clean') }), 0);
   const state = stateOf(gh, 9);
   assert.equal(state.final, 'complete');
   assert.match(state.body, /ready for human acceptance/);
@@ -558,7 +577,7 @@ test('audit: clean completes automation and resolves threads', async () => {
 test('audit: findings hand off to the consolidated fix', async () => {
   const { gh, ctx } = prWorld({ passes: 3, final: 'running' });
   const findings = [{ severity: 'P1', location: 'src/a.ts:3', problem: 'p', recommended_fix: 'f' }];
-  await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: 'abc1234def', rawResult: audit('findings', findings) });
+  await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, rawResult: audit('findings', findings) });
   assert.equal(ctx.outputs.values.run_fix, 'true');
   assert.deepEqual(JSON.parse(ctx.outputs.values.findings), findings);
   assert.match(stateOf(gh, 9).body, /found 1 issue\(s\); consolidated fix/);
@@ -567,21 +586,21 @@ test('audit: findings hand off to the consolidated fix', async () => {
 test('audit: a branch change during the read-only audit blocks automation', async () => {
   const { gh, ctx } = prWorld({ passes: 3, final: 'running' });
   gh.pulls[9].head.sha = 'tampered';
-  assert.equal(await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: 'abc1234def', rawResult: audit('clean') }), 1);
+  assert.equal(await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, rawResult: audit('clean') }), 1);
   assert.equal(stateOf(gh, 9).final, 'blocked');
   assert.match(gh.issueComments(9).at(-1).body, /changed the branch unexpectedly/);
 });
 
 test('audit: blocked and failed audits stop for a human', async () => {
   const blocked = prWorld({ passes: 3, final: 'running' });
-  await flows.finishAudit(blocked.ctx, { ...claudeOk, pr: 9, headSha: 'abc1234def', rawResult: audit('blocked') });
+  await flows.finishAudit(blocked.ctx, { ...claudeOk, pr: 9, headSha: HEAD, rawResult: audit('blocked') });
   assert.equal(stateOf(blocked.gh, 9).final, 'blocked');
   const failed = prWorld({ passes: 3, final: 'running' });
-  assert.equal(await flows.finishAudit(failed.ctx, { claudeOutcome: 'failure', claudeConclusion: 'failure', pr: 9, headSha: 'abc1234def', rawResult: '' }), 1);
+  assert.equal(await flows.finishAudit(failed.ctx, { claudeOutcome: 'failure', claudeConclusion: 'failure', pr: 9, headSha: HEAD, rawResult: '' }), 1);
   assert.equal(stateOf(failed.gh, 9).final, 'blocked');
 });
 
-const finalInputs = (extra = {}) => ({ ...claudeOk, pr: 9, headSha: 'abc1234def', auditSummary: 'two issues', rawResult: ok('fixed'), validationOutcome: 'success', ...extra });
+const finalInputs = (extra = {}) => ({ ...claudeOk, pr: 9, headSha: HEAD, auditSummary: 'two issues', rawResult: ok('fixed'), validationOutcome: 'success', ...extra });
 
 test('final fix: a verified, pushed fix completes automation without requesting another review', async () => {
   const { gh, ctx } = prWorld({ passes: 3, final: 'running' });
@@ -632,7 +651,7 @@ test('final fix: blocked, no_change, inconsistent results and validation failure
 
 // Human fix ---------------------------------------------------------------------------------------
 
-const humanInputs = (extra = {}) => ({ ...claudeOk, pr: 9, headSha: 'abc1234def', proceed: 'true', setupOutcome: 'success', rawResult: ok('fixed'), validationOutcome: 'success', ...extra });
+const humanInputs = (extra = {}) => ({ ...claudeOk, pr: 9, headSha: HEAD, proceed: 'true', setupOutcome: 'success', rawResult: ok('fixed'), validationOutcome: 'success', ...extra });
 
 test('human fix: prepare opts in, records progress and collects Codex findings; a pushed fix resets the budget', async () => {
   const { gh, ctx } = prWorld({ labelBy: null, passes: 3, final: 'blocked' });
@@ -640,7 +659,7 @@ test('human fix: prepare opts in, records progress and collects Codex findings; 
   await flows.prepareHumanFix(ctx, { pr: 9, actor: 'owner' });
   assert.equal(ctx.outputs.values.proceed, 'true');
   assert.equal(ctx.outputs.values.head_ref, 'feature/x');
-  assert.equal(ctx.outputs.values.head_sha, 'abc1234def');
+  assert.equal(ctx.outputs.values.head_sha, HEAD);
   assert.deepEqual(JSON.parse(ctx.outputs.values.codex_findings).findings.map((f) => [f.thread, f.latest]), [['PRRT_drift', null], ['PRRT_ico', null]]);
   assert.deepEqual(gh.events[9].map((e) => e.actor.login), [BOT]);
   assert.match(stateOf(gh, 9).body, /Owner-requested fix \(`\/agent-fix` by @owner\) is running/);
@@ -702,4 +721,243 @@ test('human fix: ineligible PRs are skipped inside the lock', async () => {
   assert.equal(forkCtx.outputs.values.proceed, 'false');
   assert.equal(await flows.finishHumanFix(forkCtx, { pr: 9, proceed: 'false' }), 0);
   assert.equal(gh.comments.length, 0);
+});
+
+// Codex completion events ---------------------------------------------------------------------
+
+const CW = '4d1c0e3164fe92828c917f20da980d75d54bd293';
+
+/** Curious Workbench PR #17: an opted-in PR with one pass used, its review requested with wait_minutes 0. */
+async function awaitingWorld({ waitMinutes = 0, origin = 'human-fix' } = {}) {
+  const gh = new FakeGitHub();
+  gh.addPull({ number: 17, head: { ref: 'feature/brand', sha: CW } });
+  gh.labelEvent(17, 'agent-review', BOT);
+  gh.addComment(17, renderState({ passes: 1, final: 'not_started', maxPasses: 3, stage: 'seed' }), BOT);
+  const config = defaultConfig(`codex:\n  wait_minutes: ${waitMinutes}\n`);
+  const ctx = fakeContext(gh, { config });
+  await flows.reviewCycle(ctx, { pr: 17, origin });
+  return { gh, config, ctx };
+}
+
+/** Deliver a Codex issue comment to the completion job, as the review workflow does. */
+async function deliver({ gh, config }, comment, action = 'edited') {
+  const ctx = fakeContext(gh, { config, event: { action, issue: { number: 17, pull_request: {} }, comment } });
+  assert.equal(await flows.recordCodexCompletion(ctx, { pr: 17 }), 0);
+  return ctx.outputs.values.result;
+}
+
+const state17 = (gh) => stateOf(gh, 17);
+const summaryComment = (gh, options) => gh.addComment(17, codexSummary(options), CODEX);
+const nonStateComments = (gh) => gh.issueComments(17).filter((c) => !c.body.startsWith('<!-- agent-review-state -->'));
+
+test('completion: a summary edit for the awaited commit marks a clean review ready for human acceptance', async () => {
+  const world = await awaitingWorld();
+  const { gh } = world;
+  const before = nonStateComments(gh).length;
+  const pending = summaryComment(gh, { code: '⏳ **In progress**' });
+  assert.equal(await deliver(world, pending), 'ignored');
+  assert.equal(state17(gh).review.status, 'requested');
+
+  pending.body = codexSummary(); // Codex edits its summary to "Completed"
+  assert.equal(await deliver(world, pending), 'clean');
+  const state = state17(gh);
+  assert.deepEqual([state.passes, state.final], [1, 'not_started'], 'budget and final audit untouched');
+  assert.deepEqual(state.review, { sha: CW, status: 'clean', origin: 'human-fix', requestedAt: state.review.requestedAt, requestId: state.review.requestId, completedAt: '2026-10-05T18:52:10Z' });
+  assert.match(state.body, /\*\*Stage:\*\* Codex review completed with no actionable findings\.\n\*\*Codex review:\*\* Completed — no actionable findings\n\*\*Commit:\*\* `4d1c0e3`\n\*\*Requested:\*\* .*\n\*\*Completed:\*\* 2026-10-05 18:52 UTC/);
+  assert.match(state.body, /Reported by Codex's review summary; no unresolved Codex findings remain\.\n\nWhen CI passes, this pull request is ready for human acceptance\./);
+  assert.doesNotMatch(state.body, /approved/i);
+  assert.equal(nonStateComments(gh).length, before + 1, 'only Codex\'s own comment was added; no bottom comment');
+  assert.equal(gh.issueComments(17).filter((c) => c.body.startsWith('@codex review')).length, 1, 'no new review request');
+  assert.ok(!gh.calls.some((c) => c.body?.query?.includes('resolveReviewThread')), 'nothing to resolve, nothing resolved');
+});
+
+test('completion: the clean-result comment completes the review just as well', async () => {
+  const world = await awaitingWorld();
+  assert.equal(await deliver(world, world.gh.addComment(17, cleanResult('4d1c0e3164'), CODEX), 'created'), 'clean');
+  assert.match(state17(world.gh).body, /Reported by Codex's result comment/);
+});
+
+test('completion: duplicate signals for the same review are no-ops', async () => {
+  const world = await awaitingWorld();
+  const { gh } = world;
+  assert.equal(await deliver(world, summaryComment(gh)), 'clean');
+  const snapshot = { body: state17(gh).body, comments: gh.comments.length, writes: gh.calls.filter((c) => c.method !== 'GET').length };
+  assert.equal(await deliver(world, gh.addComment(17, cleanResult(), CODEX), 'created'), 'duplicate');
+  assert.equal(await deliver(world, summaryComment(gh)), 'duplicate');
+  assert.equal(state17(gh).body, snapshot.body, 'state unchanged');
+  assert.equal(gh.comments.length, snapshot.comments + 2, 'only the two Codex comments were added');
+  assert.equal(gh.calls.filter((c) => c.method !== 'GET').length, snapshot.writes, 'no state writes, comments, reviews or thread changes');
+});
+
+test('completion: polling may record the clean result first; a later event changes nothing', async () => {
+  const gh = new FakeGitHub();
+  gh.addPull({ number: 17, head: { ref: 'feature/brand', sha: CW } });
+  gh.labelEvent(17, 'agent-review', BOT);
+  const config = defaultConfig('codex:\n  wait_minutes: 5\n');
+  gh.onPoll = (g) => {
+    if (!g.comments.some((c) => c.body.startsWith('Codex Review:'))) g.addComment(17, cleanResult(), CODEX);
+  };
+  const ctx = fakeContext(gh, { config });
+  await flows.reviewCycle(ctx, { pr: 17, origin: 'remediation' });
+  assert.equal(ctx.outputs.values.result, 'clean');
+  const body = state17(gh).body;
+  assert.equal(state17(gh).review.status, 'clean');
+  assert.match(body, /Reported by the monitoring job/);
+  gh.onPoll = null;
+  assert.equal(await deliver({ gh, config }, summaryComment(gh)), 'duplicate');
+  assert.equal(await deliver({ gh, config }, gh.comments.find((c) => c.body.startsWith('Codex Review:')), 'created'), 'duplicate');
+  assert.equal(state17(gh).body, body);
+});
+
+test('completion: after the monitor window, the event still completes the review', async () => {
+  const world = await awaitingWorld({ waitMinutes: 1 });
+  const before = state17(world.gh);
+  assert.match(before.body, /still running beyond the 1-minute monitor window; awaiting completion signal/);
+  assert.match(before.body, /does not mean Codex failed/);
+  assert.equal(before.review.status, 'requested');
+  assert.equal(await deliver(world, summaryComment(world.gh)), 'clean');
+});
+
+test('completion: a signal for an older commit never overwrites the newer request', async () => {
+  const world = await awaitingWorld();
+  const { gh, ctx } = world;
+  const newer = 'f00dfeed'.repeat(5);
+  gh.pulls[17].head.sha = newer; // remediation pushed and re-requested review
+  await flows.reviewCycle(ctx, { pr: 17, origin: 'remediation' });
+  const body = state17(gh).body;
+  assert.equal(await deliver(world, summaryComment(gh, { commit: '4d1c0e3' })), 'stale');
+  assert.equal(await deliver(world, gh.addComment(17, cleanResult('4d1c0e3164'), CODEX), 'created'), 'stale');
+  assert.equal(state17(gh).body, body);
+  assert.deepEqual([state17(gh).review.sha, state17(gh).review.status], [newer, 'requested']);
+  assert.equal(await deliver(world, summaryComment(gh, { commit: 'f00dfee' })), 'clean');
+});
+
+test('completion: a review of a commit that is no longer the head is recorded as outdated, not ready', async () => {
+  const world = await awaitingWorld();
+  world.gh.pulls[17].head.sha = 'b'.repeat(40); // pushed by hand after the request
+  assert.equal(await deliver(world, summaryComment(world.gh)), 'outdated');
+  const state = state17(world.gh);
+  assert.equal(state.review.status, 'outdated');
+  assert.match(state.body, /Codex review of 4d1c0e3 completed, but the pull request head has moved to bbbbbbb; not ready for human acceptance/);
+  assert.doesNotMatch(state.body, /this pull request is ready for human acceptance/);
+  assert.equal(await deliver(world, summaryComment(world.gh)), 'duplicate');
+});
+
+test('completion: without a recorded request (state from before this version) nothing is guessed', async () => {
+  const gh = new FakeGitHub();
+  gh.addPull({ number: 17, head: { ref: 'feature/brand', sha: CW } });
+  gh.labelEvent(17, 'agent-review', BOT);
+  const legacy = '<!-- agent-review-state -->\n<!-- passes=1 -->\n<!-- final=not_started -->\n### Agent review status\n\n**Stage:** Codex review after owner-requested fix requested.\n\nRequested for commit 4d1c0e3.';
+  gh.addComment(17, legacy, BOT);
+  assert.equal(await deliver({ gh, config: defaultConfig() }, summaryComment(gh)), 'unknown');
+  assert.equal(state17(gh).body, legacy);
+});
+
+test('completion: a spoofed signal or an opted-out PR changes nothing', async () => {
+  const world = await awaitingWorld();
+  const { gh } = world;
+  const body = state17(gh).body;
+  assert.equal(await deliver(world, gh.addComment(17, codexSummary(), 'owner')), 'ignored');
+  assert.equal(await deliver(world, gh.addComment(17, cleanResult(), 'chatgpt-codex-connector-fan'), 'created'), 'ignored');
+  assert.equal(state17(gh).body, body);
+  gh.pulls[17].labels = [];
+  assert.equal(await deliver(world, summaryComment(gh)), 'ignored');
+  assert.equal(state17(gh).body, body);
+});
+
+test('completion: unresolved findings from the awaited review are never reported clean', async () => {
+  const world = await awaitingWorld();
+  const { gh } = world;
+  const review = gh.addReview(17, CODEX, '', { commit_id: CW });
+  gh.threads[17] = [codexThreads(review.id).find((t) => t.id === 'PRRT_drift')];
+  assert.equal(await deliver(world, summaryComment(gh)), 'findings');
+  const state = state17(gh);
+  assert.equal(state.review.status, 'findings');
+  assert.equal(state.passes, 1);
+  assert.match(state.body, /\*\*Stage:\*\* Codex review completed with actionable findings; awaiting automated remediation\./);
+  assert.match(state.body, /\(1 unresolved finding thread\(s\)\); that review starts automated remediation/);
+  assert.doesNotMatch(state.body, /ready for human acceptance/);
+  assert.equal(gh.threads[17][0].isResolved, false);
+  assert.ok(!gh.issueComments(17).some((c) => c.body.startsWith('@codex review') && c.id > review.id), 'no remediation or review started here');
+});
+
+test('completion: earlier unresolved Codex findings keep a clean-looking review from being ready', async () => {
+  const world = await awaitingWorld();
+  world.gh.threads[17] = codexThreads(1); // left open by an earlier review
+  assert.equal(await deliver(world, world.gh.addComment(17, cleanResult(), CODEX), 'created'), 'findings');
+  const state = state17(world.gh);
+  assert.match(state.body, /Codex review completed without new findings, but 2 earlier unresolved Codex finding\(s\) remain; human input required/);
+  assert.doesNotMatch(state.body, /ready for human acceptance/);
+});
+
+test('completion: findings review first, then the summary edit: remediation state is never overwritten', async () => {
+  const world = await awaitingWorld({ origin: 'remediation' });
+  const { gh } = world;
+  gh.addComment(17, requestBody('remediation'), 'owner');
+  const review = gh.addReview(17, CODEX, '', { commit_id: CW });
+  gh.threads[17] = [codexThreads(review.id).find((t) => t.id === 'PRRT_drift')];
+  const plan = fakeContext(gh, { config: world.config, event: { review: { id: review.id, commit_id: CW, submitted_at: '2026-10-05T18:51:00Z', body: '' } } });
+  await flows.planRemediation(plan, { pr: 17 });
+  assert.equal(plan.outputs.values.mode, 'remediate');
+  const running = state17(gh);
+  assert.match(running.body, /automated remediation pass 2\/3 is running/);
+  assert.deepEqual([running.review.sha, running.review.status], [CW, 'findings']);
+
+  assert.equal(await deliver(world, summaryComment(gh)), 'duplicate');
+  assert.equal(state17(gh).body, running.body, 'still "remediation running"');
+});
+
+test('completion: summary edit first, then the findings review: the review still drives remediation', async () => {
+  const world = await awaitingWorld({ origin: 'remediation' });
+  const { gh } = world;
+  gh.addComment(17, requestBody('remediation'), 'owner');
+  const review = gh.addReview(17, CODEX, '', { commit_id: CW });
+  gh.threads[17] = [codexThreads(review.id).find((t) => t.id === 'PRRT_drift')];
+  assert.equal(await deliver(world, summaryComment(gh)), 'findings');
+  assert.match(state17(gh).body, /awaiting automated remediation/);
+
+  const plan = fakeContext(gh, { config: world.config, event: { review: { id: review.id, commit_id: CW, body: '' } } });
+  await flows.planRemediation(plan, { pr: 17 });
+  assert.deepEqual([plan.outputs.values.mode, plan.outputs.values.countable], ['remediate', 'true']);
+  assert.match(state17(gh).body, /automated remediation pass 2\/3 is running/);
+  assert.equal(state17(gh).passes, 1, 'the pass is consumed only by a verified fix, later');
+});
+
+test('completion: a summary marked completed before Codex submits its review is corrected by that review', async () => {
+  // GitHub orders nothing between the two events; if the summary wins and no
+  // findings exist yet, "clean" is recorded until the review event arrives.
+  const world = await awaitingWorld({ origin: 'remediation' });
+  const { gh } = world;
+  gh.addComment(17, requestBody('remediation'), 'owner');
+  assert.equal(await deliver(world, summaryComment(gh)), 'clean');
+  const review = gh.addReview(17, CODEX, '', { commit_id: CW });
+  const plan = fakeContext(gh, { config: world.config, event: { review: { id: review.id, commit_id: CW, body: '' } } });
+  await flows.planRemediation(plan, { pr: 17 });
+  assert.equal(plan.outputs.values.mode, 'remediate');
+  const state = state17(gh);
+  assert.equal(state.review.status, 'findings');
+  assert.match(state.body, /automated remediation pass 2\/3 is running/);
+  assert.doesNotMatch(state.body, /ready for human acceptance/);
+});
+
+test('completion: once automated review has ended, signals change nothing', async () => {
+  const world = await awaitingWorld();
+  const { gh } = world;
+  const state = state17(gh);
+  gh.comments.find((c) => c.id === gh.stateComments(17)[0].id).body = renderState({ passes: 3, final: 'running', review: state.review, maxPasses: 3, stage: 'audit running' });
+  assert.equal(await deliver(world, summaryComment(gh)), 'finished');
+  assert.match(state17(gh).body, /audit running/);
+});
+
+test('completion: /agent-fix ends the wait, so a late clean result cannot hide its outcome', async () => {
+  const world = await awaitingWorld({ origin: 'remediation' });
+  const { gh, config } = world;
+  const fix = fakeContext(gh, { config });
+  await flows.prepareHumanFix(fix, { pr: 17, actor: 'owner' });
+  assert.equal(state17(gh).review, null, 'no review is awaited while the fix runs');
+  await flows.finishHumanFix(fix, { ...claudeOk, pr: 17, headSha: CW, proceed: 'true', setupOutcome: 'success', rawResult: ok('blocked') });
+  const blocked = state17(gh).body;
+  assert.match(blocked, /Owner-requested fix is blocked; human input required/);
+  assert.equal(await deliver(world, summaryComment(gh)), 'unknown');
+  assert.equal(state17(gh).body, blocked);
 });

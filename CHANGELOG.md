@@ -5,6 +5,8 @@ All notable changes are documented here. Releases follow
 
 ## Unreleased
 
+### Verified agent results
+
 Claude's structured results are verified against GitHub instead of trusted. In
 Curious Workbench, remediation returned `fixed` for a finding it had deliberately
 left for a design decision, pushed nothing, and still consumed a remediation pass.
@@ -25,7 +27,37 @@ left for a design decision, pushed nothing, and still consumed a remediation pas
 - The workflow collects the PR's unresolved, non-outdated Codex inline review
   threads and lists them in the remediation and `/agent-fix` prompts, so an empty
   review body no longer reads as "no findings".
-- No permission, secret, wrapper or configuration changes.
+- No permission, secret, wrapper or configuration changes for this part.
+
+### Event-driven Codex completion
+
+Codex review completion is event-driven, and the Agent review status comment
+shows where the review stands. On Curious Workbench PR #17, with
+`codex.wait_minutes: 0`, Codex finished a clean review but the status kept saying
+"requested": a clean review submits no pull request review, so no event reached
+the workflow.
+
+- **Wrapper change:** `agent-review.yml` also listens to `issue_comment` `edited`
+  and lets Codex's review-summary and clean-result comments through its
+  pre-filter. Re-run `install` to regenerate it; older wrappers keep working, but
+  without event-driven clean completion. An edited `/agent-review` comment is no
+  longer treated as a new command.
+- The status comment records the awaited review in hidden markers (`review_sha`
+  with the full SHA, status, origin, request time and request comment ID) and
+  shows its commit, request time and result. State written by 1.0.0 still parses.
+- A new `Record Codex completion` job (Contents read, Issues write, Pull requests
+  read; no Claude, no PAT) accepts Codex's summary edit or clean-result comment
+  only from the Codex bot account, only for the recorded commit, and only while it
+  is still the PR head. Unresolved Codex threads or a Codex pull request review of
+  that commit keep the PR from being reported ready.
+- Completion handling is shared with polling and idempotent: duplicate, stale and
+  uncorrelated signals change nothing, and a recorded findings result is never
+  turned clean. Codex's pull request review remains the only remediation trigger.
+- Polling (`wait_minutes` above 0) still works and records results through the
+  same path, so it too requires the Codex bot account and no longer reports a PR
+  ready while unresolved Codex threads remain. An expired window is reported as
+  the end of monitoring, not as a Codex failure. `/agent-fix` ends the wait for a
+  pending review.
 
 ## 1.0.0 — 2026-10-05
 

@@ -120,6 +120,7 @@ cannot read another private repository.
 | agent-review | `pull_request.labeled` | label `agent-review` | start review cycle (Path B opt-in) |
 | agent-review | `issue_comment.created` | PR comment starting `/agent-review` | start/restart review cycle |
 | agent-review | `pull_request_review.submitted` | reviewer login starts `chatgpt-codex-connector` | remediation / escalation |
+| agent-review | `issue_comment.created` / `.edited` | Codex bot comment containing its review-summary marker or "find any major issues" | record a completed Codex review |
 | agent-human-fix | `issue_comment.created` | PR comment starting `/agent-fix` | human-requested fix |
 
 Trigger words and label names are fixed conventions rather than configuration,
@@ -170,14 +171,26 @@ State is a single PR comment written by `github-actions[bot]`:
 <!-- agent-review-state -->
 <!-- passes=1 -->
 <!-- final=not_started -->
+<!-- review_sha=4d1c0e3164fe92828c917f20da980d75d54bd293 -->
+<!-- review_status=requested -->
+<!-- review_origin=human-fix -->
+<!-- review_requested_at=2026-10-05T18:46:00Z -->
+<!-- review_request_id=3412345678 -->
 ### Agent review status
-**Stage:** …
+**Stage:** Codex review after owner-requested fix requested; awaiting completion signal.
+**Codex review:** Awaiting completion signal
+**Commit:** `4d1c0e3`
+**Requested:** 2026-10-05 18:46 UTC (review after owner-requested fix)
 **Automated remediation:** 1 / 3
 **Final audit:** Not started
 ```
 
-Only comments authored by `github-actions[bot]` are trusted as state, so a human
-cannot accidentally (or deliberately) reset the budget by pasting the markers.
+This comment is the authoritative status of the automation. Only comments
+authored by `github-actions[bot]` are trusted as state, so a human cannot
+accidentally (or deliberately) reset the budget by pasting the markers, and
+markers are read only above the heading, so text quoted in the details cannot
+add any. The `review_*` markers track the Codex review being awaited; state
+written before they existed simply has none.
 
 Each Codex review request is a comment posted with `AGENT_GITHUB_TOKEN`:
 
@@ -289,6 +302,81 @@ listed, the prompt says so and tells Claude to read them on the PR.
 The best possible terminal message is *"ready for human acceptance"*. The
 automation never approves, never merges, and never claims a human reviewed the
 work.
+
+### Codex review completion
+
+Codex reports a finished review in more than one way, and a clean review submits
+no pull request review at all:
+
+| Signal | Arrives as | Read as |
+| --- | --- | --- |
+| Pull request review with inline findings | `pull_request_review.submitted` | findings; starts remediation (the only remediation trigger) |
+| Its persistent summary comment edited to show the **Code Review** row completed for a commit | `issue_comment.edited` | completed (the Security Review row is ignored) |
+| "Codex Review: Didn't find any major issues … Reviewed commit: `<sha>`" | `issue_comment.created` | completed, clean |
+| 👍 on the `@codex review` request | (seen by polling only) | completed, clean |
+
+Every review request is recorded with the full head SHA (`review_sha`) and
+`review_status=requested`. A completion signal changes the state only when, in
+the PR lock:
+
+1. the comment's author is the Codex bot account (`chatgpt-codex-connector[bot]`,
+   type `Bot`), whatever the text says;
+2. the PR is open, from this repository, and opted in;
+3. the commit the signal names (at least 7 hex characters) is a prefix of
+   `review_sha`;
+4. that review is still `requested`, and automation has not ended;
+5. the PR head is still `review_sha`; otherwise the review is recorded as
+   `outdated` and the PR is not ready;
+6. Codex submitted no pull request review of that commit since the request, and
+   no unresolved, non-outdated Codex threads remain; otherwise it is recorded as
+   `findings` and the PR is not ready.
+
+Only then is it recorded as `clean`: "Codex review completed with no actionable
+findings … ready for human acceptance" when CI passes. Summary parsing is
+deliberately strict (table header, one Code Review row, a commit); anything else
+is logged and ignored rather than guessed.
+
+```text
+requested ──clean signal, checks pass──────────────▶ clean
+    │      ──signal, but findings / Codex review ──▶ findings ──▶ remediation …
+    │      ──signal, but head moved ───────────────▶ outdated
+    ├── Codex pull request review (remediate) ─────▶ findings
+    └── /agent-fix starts ─────────────────────────▶ (no review awaited)
+any ── new review request ─────────────────────────▶ requested (new SHA)
+```
+
+**Stale and duplicate signals change nothing.** A signal for another commit, for
+a review already recorded as `clean`, `findings` or `outdated`, or without a
+recorded request (state from older versions) is logged and ignored. Codex
+usually sends two clean signals per review, so the second is a no-op, as is an
+event arriving after polling has recorded the result.
+
+**Formal reviews and summary edits.** Both orders end the same way, because every
+write happens in the `agent-pr-<number>` lock:
+
+- review first: remediation planning records `findings`, so the later summary
+  edit is a duplicate and "remediation running" stays;
+- summary first: the review and its threads already exist, so the state records
+  `findings` ("awaiting automated remediation"), and the review event then runs
+  remediation as usual.
+
+If Codex ever marked its summary completed *before* submitting a findings review,
+`clean` would show until that review's remediation run replaced it. A `/agent-fix`
+ends the wait for a pending review, so a late clean signal cannot hide the fix's
+outcome.
+
+The gate repeats checks 1–4, and the pull request review part of 6, before
+queuing the locked job. GitHub keeps one
+pending job per concurrency group and a newly queued job replaces a pending one,
+so signals that would change nothing never compete with a queued remediation.
+
+**`codex.wait_minutes: 0` holds no runner open**, yet completion is still
+recorded: the status says "awaiting completion signal" until Codex reports. If
+Codex never reports, it says so indefinitely; nothing in GitHub lets the workflow
+observe a Codex failure or timeout, so it never claims one. With `wait_minutes`
+above 0 the requesting job also polls, and an expired window is reported as the
+end of monitoring, not as a Codex failure. `/agent-review` requests a fresh
+review in either case.
 
 ## Git credentials in Claude sessions
 
@@ -455,3 +543,8 @@ Verified against GitHub documentation in October 2026.
     workflows do; see [Git credentials in Claude sessions](#git-credentials-in-claude-sessions).
     The `checkout-credentials` CI job checks the layout against the real
     `actions/checkout@v7` on every run.
+16. **A clean Codex review submits no pull request review.** It edits Codex's
+    summary comment and posts a result comment instead, so the review wrapper also
+    listens to `issue_comment` `edited` events and the runtime correlates them;
+    see [Codex review completion](#codex-review-completion). Each summary edit
+    starts a short gate job.

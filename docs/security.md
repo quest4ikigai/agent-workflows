@@ -80,6 +80,7 @@ If Claude's push fails with a 403, do not widen either token. See the
 | Implement | read | write | write | read | write² |
 | Request Codex review (Path A) | read | write | write | — | — |
 | Start review cycle | read | write | write | — | — |
+| Record Codex completion | read | write | read | — | — |
 | Remediate / escalate | read | write | write | read | write² |
 | Apply feedback (`/agent-fix`) | read | write | write | read | write² |
 
@@ -99,6 +100,7 @@ that calls the reusable workflow; called jobs can only reduce it.
 | `agent-review` label | labeler trusted; otherwise the label is removed and the reason posted |
 | `/agent-review`, `/agent-fix` | commenter trusted; untrusted commenters are ignored without a reply, so the bot cannot be used to amplify spam |
 | Codex review | reviewer login is the Codex app, and the PR is opted in |
+| Codex completion comment (summary edit or clean result) | author is the Codex bot account (`chatgpt-codex-connector[bot]`, type `Bot`), never a look-alike login or pasted text; the body is a recognized format; the PR is opted in; the reported commit identifies the recorded review SHA, which is still the PR head |
 
 **Opted in** means the PR carries `agent-review` and the most recent application
 of that label (from the issue events API) was by a trusted user or by
@@ -145,9 +147,12 @@ it.
   branch), so a `fixed` result that pushed nothing cannot consume budget, request
   a review or complete automation, and Claude's `no_change` never resolves Codex
   threads. See [architecture.md](architecture.md#agent-results-are-verified-not-trusted).
+- A Codex completion signal can only move the review being awaited from
+  `requested` to its result. It never resets the budget, never changes the final
+  audit, and never turns a known findings result clean.
 - All state transitions happen inside a per-PR concurrency lock
-  (`agent-pr-<number>`), shared by opt-in, remediation, escalation and
-  `/agent-fix`, so two agents never edit one branch at once.
+  (`agent-pr-<number>`), shared by opt-in, remediation, escalation,
+  `/agent-fix` and Codex completion, so two agents never edit one branch at once.
 
 ## Fork behaviour
 

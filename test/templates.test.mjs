@@ -11,6 +11,7 @@ import {
   renderValidateScript,
   renderWrapper,
 } from '../lib/templates.mjs';
+import { CODEX, cleanResult, codexSummary, evaluateExpression, user } from './helpers.mjs';
 
 test('wrappers reference the pinned reusable workflow and carry a managed header', () => {
   for (const w of WRAPPERS) {
@@ -50,6 +51,7 @@ test('wrapper pre-filters match the fixed trigger conventions', () => {
   assert.match(review, /github\.event\.label\.name == 'agent-review'/);
   assert.match(review, /startsWith\(github\.event\.review\.user\.login, 'chatgpt-codex-connector'\)/);
   assert.match(review, /startsWith\(github\.event\.comment\.body, '\/agent-review'\)/);
+  assert.match(review, /^  issue_comment:\n    types: \[created, edited\]$/m, 'Codex edits its review summary');
   const fix = renderWrapper('agent-human-fix', { ref: 'v1' });
   assert.match(fix, /startsWith\(github\.event\.comment\.body, '\/agent-fix'\)/);
   assert.match(fix, /github\.event\.issue\.pull_request != null/);
@@ -116,4 +118,56 @@ test('scripts are strict bash and mark missing validation explicitly', () => {
   assert.ok(empty.includes(NO_VALIDATION_MARKER));
   assert.match(empty, /#   go test \.\/\.\.\./);
   assert.match(empty, /::warning::No validation commands/);
+});
+
+/** The wrapper job's `if:` expression (inline or folded `>-`), as GitHub sees it. */
+function wrapperCondition(template) {
+  const lines = renderWrapper(template, { ref: 'v1' }).split('\n');
+  const at = lines.findIndex((l) => /^ {4}if: /.test(l));
+  const inline = lines[at].replace(/^ {4}if: /, '');
+  if (inline !== '>-') return inline;
+  const body = [];
+  for (const line of lines.slice(at + 1)) {
+    if (!/^ {6}/.test(line)) break;
+    body.push(line.trim());
+  }
+  return body.join(' ');
+}
+
+test('review wrapper starts a run for commands, Codex reviews and Codex completion signals only', () => {
+  const condition = wrapperCondition('agent-review');
+  const comment = (action, body, who, pr = true) => ({
+    event_name: 'issue_comment',
+    event: { action, issue: { number: 17, pull_request: pr ? { url: 'x' } : null }, comment: { body, user: who } },
+  });
+  const cases = [
+    // [description, github context, runs]
+    ['/agent-review', comment('created', '/agent-review', user('owner')), true],
+    ['/agent-review edited', comment('edited', '/agent-review please', user('owner')), false],
+    ['Codex summary edited', comment('edited', codexSummary(), user(CODEX)), true],
+    ['Codex summary created', comment('created', codexSummary({ code: '⏳ **In progress**' }), user(CODEX)), true],
+    ['Codex clean result', comment('created', cleanResult(), user(CODEX)), true],
+    ['Codex clean result edited', comment('edited', cleanResult(), user(CODEX)), true],
+    ['other Codex comment', comment('created', 'Codex is reviewing.', user(CODEX)), false],
+    ['human pasting the summary', comment('edited', codexSummary(), user('owner')), false],
+    ['human pasting the clean result', comment('created', cleanResult(), user('owner')), false],
+    ['look-alike human login', comment('created', cleanResult(), { login: 'chatgpt-codex-connector-fan', type: 'User' }), false],
+    ['other bot with the text', comment('created', cleanResult(), user('dependabot[bot]')), false],
+    ['ordinary comment', comment('created', 'Looks good to me', user('owner')), false],
+    ['Codex summary on an issue', comment('edited', codexSummary(), user(CODEX), false), false],
+    ['Codex review', { event_name: 'pull_request_review', event: { review: { user: user(CODEX) } } }, true],
+    ['human review', { event_name: 'pull_request_review', event: { review: { user: user('owner') } } }, false],
+    ['agent-review label', { event_name: 'pull_request', event: { label: { name: 'agent-review' } } }, true],
+    ['other label', { event_name: 'pull_request', event: { label: { name: 'bug' } } }, false],
+  ];
+  for (const [what, github, runs] of cases) assert.equal(evaluateExpression(condition, { github }), runs, what);
+});
+
+test('human-fix wrapper still reacts only to new /agent-fix comments on pull requests', () => {
+  const condition = wrapperCondition('agent-human-fix');
+  const github = (body, pr = true) => ({ event_name: 'issue_comment', event: { action: 'created', issue: { pull_request: pr ? {} : null }, comment: { body, user: user('owner') } } });
+  assert.equal(evaluateExpression(condition, { github: github('/agent-fix rename foo') }), true);
+  assert.equal(evaluateExpression(condition, { github: github('/agent-fix rename foo', false) }), false);
+  assert.equal(evaluateExpression(condition, { github: github(cleanResult()) }), false);
+  assert.match(renderWrapper('agent-human-fix', { ref: 'v1' }), /^  issue_comment:\n    types: \[created\]$/m);
 });

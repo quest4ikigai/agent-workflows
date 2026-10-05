@@ -246,4 +246,6 @@ secrets and labels. Open PRs keep their status comments; nothing else remains.
 | `/agent-fix` ignored silently | Commenter is not trusted; untrusted commenters get no reply by design |
 | Label removed right after adding it | The labeler is not a trusted user; the explanation is posted on the PR |
 | Label opt-in or remediation never starts on one PR | The PR has merge conflicts: GitHub does not run `pull_request`/`pull_request_review` workflows until they are resolved |
-| A queued `/agent-fix` run shows as cancelled | GitHub keeps only one pending run per concurrency group; a newer event for the same PR replaced it. Comment again once the running job finishes |
+| A queued `/agent-fix` run shows as cancelled | GitHub keeps only one pending run per concurrency group; a newer event for the same PR (including a Codex completion signal) replaced it. Comment again once the running job finishes |
+| Status stays "awaiting completion signal" | Codex has not reported a result for the requested commit. Check Codex's own summary comment on the PR; if the review failed or never started, comment `/agent-review` to request a new one. With `wait_minutes: 0` nothing polls, so the workflow cannot detect a Codex failure itself |
+| Codex finished but the status did not change | The wrappers predate event-driven completion (re-run `install`), the completion was for an older commit, or unresolved Codex threads remain; the `Gate` job summary of the comment's run says which |

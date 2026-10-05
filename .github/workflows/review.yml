@@ -5,6 +5,8 @@
 #   issue_comment "/agent-review"        → start or restart a review cycle
 #   pull_request_review by Codex         → remediation, or escalation once the
 #                                          normal budget is spent
+#   issue_comment by Codex (its review   → record a completed review of the
+#   summary edited, or its clean result)   awaited commit
 # See docs/architecture.md for the state machine.
 
 name: agent-workflows / review
@@ -118,6 +120,46 @@ jobs:
           ACTOR: ${{ needs.gate.outputs.actor }}
           VIA: ${{ needs.gate.outputs.via }}
         run: node "$AW" start-review
+
+  complete:
+    name: Record Codex completion
+    needs: gate
+    if: needs.gate.outputs.action == 'complete'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: agent-pr-${{ needs.gate.outputs.pr_number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - name: Fetch agent-workflows tooling
+        shell: bash
+        env:
+          WORKFLOW_REPOSITORY: ${{ job.workflow_repository }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$WORKFLOW_REPOSITORY" ] || [ -z "$WORKFLOW_SHA" ]; then
+            echo "::error::job.workflow_repository / job.workflow_sha are unavailable; cannot locate agent-workflows tooling."
+            exit 1
+          fi
+          dest="$RUNNER_TEMP/agent-workflows"
+          rm -rf "$dest"
+          git -c init.defaultBranch=main init -q "$dest"
+          git -C "$dest" fetch -q --depth 1 "$GITHUB_SERVER_URL/$WORKFLOW_REPOSITORY" "$WORKFLOW_SHA"
+          git -C "$dest" -c advice.detachedHead=false checkout -q FETCH_HEAD
+          echo "AW=$dest/lib/runtime/main.mjs" >> "$GITHUB_ENV"
+          echo "agent-workflows tooling: $WORKFLOW_REPOSITORY@$WORKFLOW_SHA"
+
+      - name: Record Codex completion
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          AW_CONFIG: ${{ needs.gate.outputs.config }}
+          PR_NUMBER: ${{ needs.gate.outputs.pr_number }}
+        run: node "$AW" record-codex-completion
 
   remediate:
     name: Remediate

@@ -128,6 +128,7 @@ test('PR-mutating jobs share one lock per PR; implementation locks per issue', (
     ['implement.yml', 'agent-pr', 'needs.implement.outputs.pr_number'],
     ['review.yml', 'agent-pr', 'needs.gate.outputs.pr_number'],
     ['review.yml', 'agent-pr', 'needs.gate.outputs.pr_number'],
+    ['review.yml', 'agent-pr', 'needs.gate.outputs.pr_number'],
     ['human-fix.yml', 'agent-pr', 'needs.gate.outputs.pr_number'],
   ]);
   for (const f of REUSABLE) assert.doesNotMatch(read(f), /cancel-in-progress: true/);
@@ -238,6 +239,7 @@ const REQUIRED_ENV = {
   'review-cycle': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER', 'ORIGIN'],
   'start-review': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER', 'ACTOR', 'VIA'],
   'plan-remediation': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER'],
+  'record-codex-completion': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER'],
   'finish-remediation': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'PASSES', 'COUNTABLE', 'HEAD_SHA', ...CLAUDE, ...VALIDATION],
   'finish-audit': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', ...CLAUDE],
   'finish-final-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', 'AUDIT_SUMMARY', ...CLAUDE, ...VALIDATION],
@@ -267,7 +269,7 @@ test('every runtime step receives exactly the inputs its command reads', () => {
       }
     }
   }
-  assert.equal(checked, 27);
+  assert.equal(checked, 28);
 });
 
 test('write sessions are verified against the head recorded before Claude ran, and only a verified fix requests review', () => {
@@ -307,4 +309,16 @@ test('remediation and /agent-fix prompts receive the Codex findings collected in
     const prompt = all.find((s) => s.text.includes(`node "$AW" ${command}\n`));
     assert.match(prompt.text, new RegExp(`\\n {10}CODEX_FINDINGS: \\$\\{\\{ steps\\.${collector}\\.outputs\\.codex_findings \\}\\}\\n`), f);
   }
+});
+
+test('Codex completion signals are recorded by a small locked job without Claude, PAT or write access to code', () => {
+  const job = jobs(read('review.yml')).find((j) => j.startsWith('  complete:'));
+  assert.ok(job, 'review.yml has a complete job');
+  assert.match(job, /\n    needs: gate\n    if: needs\.gate\.outputs\.action == 'complete'\n/);
+  assert.match(job, /\n    concurrency:\n      group: agent-pr-\$\{\{ needs\.gate\.outputs\.pr_number \}\}\n      cancel-in-progress: false\n/);
+  assert.match(job, /\n    permissions:\n      contents: read\n      issues: write\n      pull-requests: read\n    steps:/);
+  assert.doesNotMatch(job, /anthropics\/claude-code-action|actions\/checkout|secrets\.|id-token|AGENT_GITHUB_TOKEN/);
+  const all = jobSteps(job);
+  assert.deepEqual(all.map((s) => s.name), ['Fetch agent-workflows tooling', 'Record Codex completion']);
+  assert.match(all[1].text, /node "\$AW" record-codex-completion\n/);
 });
