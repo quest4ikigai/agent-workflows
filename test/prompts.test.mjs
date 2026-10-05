@@ -51,24 +51,27 @@ test('only existing context documents are listed', () => {
 });
 
 const issue = { number: 12, title: '[agent-build] Add export', body: 'Contract text\n```\ncode\n```' };
+const branch = 'claude/issue-12-add-export';
 
 test('implement prompt: contract, docs, validation, branch rules', () => {
-  const p = implementPrompt({ config, issue, docs: ['CLAUDE.md', 'AGENTS.md'], scriptExists: true });
+  const p = implementPrompt({ config, issue, branch, docs: ['CLAUDE.md', 'AGENTS.md'], scriptExists: true });
   assert.match(p, /issue #12/);
   assert.match(p, /````\nContract text\n```\ncode\n```\n````/, 'contract fenced safely even when it contains fences');
   assert.match(p, /- CLAUDE\.md\n- AGENTS\.md/);
   assert.match(p, /bash \.github\/agent\/validate\.sh/);
-  assert.match(p, /starts with `claude\/`/);
+  assert.match(p, /You are on `claude\/issue-12-add-export`, created from `agent-main`/);
+  assert.match(p, /push them with `git push origin claude\/issue-12-add-export`/);
+  assert.match(p, /- Only push to `claude\/issue-12-add-export`\./);
   assert.match(p, /never push to `agent-main` or `main`/);
   assert.match(p, /Do not request reviews or mention @codex/);
 });
 
 test('prompts degrade gracefully without docs or validation', () => {
   const noValidation = defaultConfig('validation:\n  script: null\n');
-  const p = implementPrompt({ config: noValidation, issue, docs: [], scriptExists: false });
+  const p = implementPrompt({ config: noValidation, issue, branch, docs: [], scriptExists: false });
   assert.match(p, /No project context documents were found/);
   assert.match(p, /does not configure a validation script/);
-  const missing = implementPrompt({ config, issue, docs: [], scriptExists: false });
+  const missing = implementPrompt({ config, issue, branch, docs: [], scriptExists: false });
   assert.match(missing, /does not exist in this checkout\. Stop and return blocked/);
 });
 
@@ -90,7 +93,7 @@ test('prompts contain no repository-specific assumptions', () => {
   const generic = defaultConfig();
   const common = { config: generic, pr: 1, headRef: 'b', docs: [], scriptExists: true };
   const all = [
-    implementPrompt({ config: generic, issue, docs: [], scriptExists: true }),
+    implementPrompt({ config: generic, issue, branch, docs: [], scriptExists: true }),
     remediatePrompt({ ...common, reviewBody: '' }),
     humanFixPrompt({ ...common, actor: 'a', feedback: 'x' }),
     auditPrompt(common),

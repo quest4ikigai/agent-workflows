@@ -81,8 +81,9 @@ gate job (no lock, ~10 s)              run job(s) (serialized per issue / PR)
 ───────────────────────────            ──────────────────────────────────────────
 fetch tooling @ job.workflow_sha       fetch tooling @ job.workflow_sha
 load + validate config (API)           re-read dynamic state inside the lock
-classify event, check trust,           checkout, runtimes, setup script
-check PR/branch eligibility            render prompt → Claude → validate → finalize
+classify event, check trust,           checkout, runtimes, setup script,
+check PR/branch eligibility            remove checkout's persisted credential
+                                       render prompt → Claude → validate → finalize
 explain refusals where useful          request Codex review and wait (bounded)
 ```
 
@@ -139,8 +140,10 @@ application of that label was made by a trusted user or by the automation itself
 trusted user opens "[agent-build] …" issue   (or adds label agent-build)
   → gate: author + actor trusted, issue open
   → lock agent-implement-<n>; refuse if an open agent PR already exists for the issue
-  → Claude (implementation.model, default sonnet) in tag mode creates
-    <branch_prefix>issue-<n>-<slug> from base_branch and pushes commits
+  → pick an unused <branch_prefix>issue-<n>-<slug>; check out base_branch and
+    create that branch; run setup.sh; remove checkout's persisted credential
+  → Claude (implementation.model, default sonnet) commits and pushes to that
+    branch with its GitHub App token
   → workflow verifies commits exist on that branch, runs validate.sh
   → opens PR with AGENT_GITHUB_TOKEN (so CI runs), labels it agent-review,
     initializes review state (0 / max passes)
@@ -229,6 +232,70 @@ PR comment explaining why.
 The best possible terminal message is *"ready for human acceptance"*. The
 automation never approves, never merges, and never claims a human reviewed the
 work.
+
+## Git credentials in Claude sessions
+
+Three GitHub credentials exist in a run job, and each has one role:
+
+| Credential | Contents | Role |
+| --- | --- | --- |
+| Workflow `GITHUB_TOKEN` | read | checkout, API reads, status comments, labels |
+| `AGENT_GITHUB_TOKEN` (PAT) | read | opening Path A PRs, posting `@codex review` |
+| Claude GitHub App token | write | Claude's commits and pushes (short-lived) |
+
+Only the App token can push. That is deliberate: a push made with
+`GITHUB_TOKEN` starts no workflows, so CI and the Codex review loop would
+silently skip the agent's commits while the PR still showed the previous green
+checks. With `contents: read`, a push that picks up the wrong credential fails
+with a visible `403 Write access to repository not granted` instead.
+
+`actions/checkout` persists `GITHUB_TOKEN` for the rest of the job as an
+`http.https://github.com/.extraheader` Authorization header. Since checkout v6
+(the workflows use v7) it writes the header to
+`$RUNNER_TEMP/git-credentials-<uuid>.config` and pulls that file into
+`.git/config` with `includeIf.gitdir:<workspace>/.git.path` (plus `…/worktrees/*`
+and container-path variants). claude-code-action sets its App token in the
+`origin` URL, but git sends the extra header on every request, so the header
+wins. claude-code-action@v1 tries to remove it but only follows `include.path`
+([anthropics/claude-code-action#1721](https://github.com/anthropics/claude-code-action/issues/1721),
+open as of v1.0.241), so Claude's pushes were authenticated as `GITHUB_TOKEN`.
+
+Every job that runs Claude therefore has a **Remove persisted checkout
+credentials** step (`lib/runtime/credentials.mjs`), placed after `setup.sh`,
+which may still need the credential, and before the first Claude step:
+
+1. It reads the repository's `.git/config` and every file it includes, through
+   `include.path` and `includeIf.*.path`, whatever the condition, and follows
+   nested includes. Targets that do not exist on the runner, such as checkout's
+   container paths, are skipped.
+2. From each of those files it removes only the `Authorization` extra headers
+   that git would send to `GITHUB_SERVER_URL`. Other headers, other hosts, the
+   include entries and the files themselves stay, so checkout's post-job cleanup
+   still finds what it created.
+3. It then asks git which `Authorization` header it would actually use in the
+   repository. If one remains, for example in a runner's global config, the step
+   fails rather than letting Claude push with it.
+
+Values are matched by git itself, so the token never appears in arguments or logs;
+the step prints only how many headers it removed and from which files. It is
+idempotent, and a no-op when nothing was persisted.
+
+The same removal also keeps `GITHUB_TOKEN` away from Claude's `Bash` tool.
+Otherwise a prompt-injected session could post as `github-actions[bot]`, the only
+author whose review-state comments are trusted.
+
+`persist-credentials: false` is not used instead because `setup.sh` may need the
+credential, for example for submodules or private git dependencies.
+
+**All Claude sessions run in claude-code-action's agent mode** (an explicit
+`prompt`, no `track_progress`). Tag mode runs `git fetch` before it installs its
+own credential, so once checkout's credential is gone that fetch fails on private
+repositories (anthropics/claude-code-action#1236, #1711). Agent mode installs the
+App token before any git network operation. For that reason Path A creates its
+work branch in the workflow rather than letting tag mode create it.
+
+`validate.sh` runs after Claude, so it should not need authenticated git network
+access.
 
 ## Validation
 
@@ -324,3 +391,9 @@ Verified against GitHub documentation in October 2026.
     merge conflicts** (there is no merge commit). Label opt-in and remediation
     wait until conflicts are resolved; `/agent-review` and `/agent-fix`
     (`issue_comment`) still run. The original Mealie workflow had the same limit.
+15. **`actions/checkout` persists `GITHUB_TOKEN` in a file included through
+    `includeIf.gitdir`, and git prefers that header to the credential in the
+    remote URL.** claude-code-action@v1 does not remove it (#1721), so the
+    workflows do; see [Git credentials in Claude sessions](#git-credentials-in-claude-sessions).
+    The `checkout-credentials` CI job checks the layout against the real
+    `actions/checkout@v7` on every run.

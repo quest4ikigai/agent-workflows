@@ -149,6 +149,31 @@ test('Path A: preflight refuses when an agent PR for the issue is already open',
   assert.equal(other.ctx.outputs.values.proceed, 'true', 'issue 55 is not issue 5');
 });
 
+test('Path A: preflight picks a fresh work branch for the workflow to create', async () => {
+  const gh = new FakeGitHub();
+  gh.addIssue({ number: 5, title: '[agent-build] Add widget export to the CSV page', body: 'contract' });
+  const ctx = fakeContext(gh, { event: { issue: gh.issues[5] } });
+  ctx.env.GITHUB_RUN_ID = '987';
+  await flows.preflightImplement(ctx, { issueNumber: 5 });
+  assert.equal(ctx.outputs.values.proceed, 'true');
+  assert.equal(ctx.outputs.values.branch, 'claude/issue-5-add-widget-export-to-the');
+
+  gh.branches['claude/issue-5-add-widget-export-to-the'] = { protected: false }; // left over from a closed PR
+  await flows.preflightImplement(ctx, { issueNumber: 5 });
+  assert.equal(ctx.outputs.values.branch, 'claude/issue-5-add-widget-export-to-the-987', 'never reuses an existing branch');
+
+  gh.branches['claude/issue-5-add-widget-export-to-the-987'] = { protected: false };
+  await flows.preflightImplement(ctx, { issueNumber: 5 });
+  assert.equal(ctx.outputs.values.proceed, 'false');
+  assert.match(gh.issueComments(5).at(-1).body, /already exist\. Delete them to start over/);
+});
+
+test('work branch names follow <prefix>issue-<n>-<first five title words>', () => {
+  assert.equal(flows.workBranchName('claude/', 7, '[agent-build] Fix: the `--dry-run` flag!'), 'claude/issue-7-fix-the-dry-run-flag');
+  assert.equal(flows.workBranchName('agent-', 7, 'Plain title'), 'agent-issue-7-plain-title');
+  assert.equal(flows.workBranchName('claude/', 7, '[agent-build] 🚀 ✨'), 'claude/issue-7-implementation');
+});
+
 test('Path A: finish is a no-op when preflight stopped the run', async () => {
   const { gh, ctx } = implementWorld();
   assert.equal(await flows.finishImplement(ctx, implementInputs({ preflight: 'false', claudeOutcome: 'skipped' })), 0);

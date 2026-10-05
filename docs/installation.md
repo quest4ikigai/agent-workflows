@@ -79,18 +79,25 @@ reported as `CONFLICT` and left alone unless you pass `--force`.
   Claude runs it before reporting success; the workflow runs it again afterwards
   and stops automation if it fails.
 - **`setup.sh`** — must leave the checkout ready to build and test (install
-  dependencies, generate code, …). It runs before every Claude session.
+  dependencies, generate code, …). It runs before every Claude session, while
+  `actions/checkout`'s credential is still configured, so it can fetch submodules
+  or private git dependencies. The credential is removed right after it.
 - **`config.yml`** — check `trusted_users`, `base_branch` and `context`. See
   [configuration.md](configuration.md).
 
 Both scripts are run with `bash`, from the repository root, on `ubuntu-latest`.
-They receive no secrets.
+They receive no secrets. `validate.sh` runs after Claude, so it should not need
+authenticated git network access.
 
 ## 3. Install the Claude GitHub App
 
 Install <https://github.com/apps/claude> on the repository. Claude commits and
 pushes with a short-lived token from this app; that is what makes CI run on
-Claude's commits. (The workflows request `id-token: write` to obtain it.)
+Claude's commits. (The workflows request `id-token: write` to obtain it.) Before
+Claude starts, the workflows remove the `GITHUB_TOKEN` that `actions/checkout`
+leaves in git config, so this token is the only one git can push with. The
+workflow `GITHUB_TOKEN` and the PAT stay read-only for code
+([why](security.md#why-only-claudes-github-app-token-can-push)).
 
 ## 4. Create the secrets
 
@@ -116,7 +123,8 @@ Why a PAT is still required (and why it is so narrow): Codex rejects
 `@codex review` comments from `github-actions[bot]`, and a pull request opened with
 the built-in `GITHUB_TOKEN` does not trigger CI. The PAT is used for exactly those
 two operations; everything else uses the built-in token. It never needs write
-access to code.
+access to code. Do not grant it Contents write to fix a failing push: Claude never
+pushes with it (see [Troubleshooting](#troubleshooting)).
 
 Set the secrets:
 
@@ -201,7 +209,7 @@ Start with the lowest-risk path:
 2. **`/agent-fix`.** On that PR, comment `/agent-fix Add a sentence to the README
    explaining X.` Expect a commit from Claude and a new Codex review.
 3. **Path A.** Open a small, unambiguous issue titled `[agent-build] …`. Expect a
-   tracking comment from Claude, a `claude/issue-N-…` branch and a PR.
+   `claude/issue-N-…` branch (the `Implement` job's log names it) and a PR.
 
 Watch the **Actions** tab: every run starts with a `Gate` job whose summary says
 why it did or did not act.
@@ -228,6 +236,8 @@ secrets and labels. Open PRs keep their status comments; nothing else remains.
 | Nothing happens when an issue is opened | Wrappers not on the default branch; title does not start with `[agent-build]`; author not in `trusted_users` (see the `Gate` job summary) |
 | `Gate` fails with "config.yml was not found on the default branch" | Commit `.github/agent/config.yml` to the default branch |
 | `Gate` fails with "trusted_users must be listed explicitly" | Organization-owned repository: add `trusted_users` |
+| Claude reports a failed push: `remote: Write access to repository not granted.` / `403` | git pushed with the workflow `GITHUB_TOKEN` that `actions/checkout` persisted (contents: read) instead of Claude's GitHub App token. agent-workflows removes that credential before Claude starts; update the wrappers to a release that includes the **Remove persisted checkout credentials** step (`install --ref <ref>`), then retry. Do **not** grant `contents: write` to the workflow or the PAT: pushes with `GITHUB_TOKEN` succeed but trigger no CI or Codex review. If the step ran, check that the Claude GitHub App is installed on the repository. |
+| **Remove persisted checkout credentials** fails: "git still sends an Authorization header" | A git config outside the repository (the runner's global or system config) sets an `http.<server>.extraheader` Authorization header. Remove it from the file named in the error; the step will not edit configuration outside the repository. |
 | Claude step "finished without running Claude" | The Claude GitHub App token exchange rejected the run: the wrapper on the triggering ref differs from the default branch (e.g. a PR that edits the wrappers), or the app is not installed |
 | `Missing repository secret …` | Create the secret (step 4) |
 | Codex never responds | PAT owner is not connected to Codex, Codex review is not enabled for the repository, or the request is still queued; the status says "still running beyond the monitor window" |

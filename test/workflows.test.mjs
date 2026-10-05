@@ -39,6 +39,17 @@ function jobs(text) {
   return body.split(/^(?=  [a-z_-]+:$)/m).filter((b) => b.trim());
 }
 
+/** Steps of one job with their name, id, condition and action parsed out. */
+function jobSteps(job) {
+  return steps(job).map(({ text }) => ({
+    text,
+    name: (text.match(/^ {6}- name: (.+)$/m) || [])[1],
+    id: (text.match(/^ {8}id: (.+)$/m) || [])[1],
+    if: (text.match(/^ {8}if: (.+)$/m) || [])[1],
+    uses: (text.match(/^ {8}uses: (.+)$/m) || [])[1] || '',
+  }));
+}
+
 test('reusable workflows are workflow_call only, with explicit optional secrets', () => {
   for (const f of REUSABLE) {
     const text = read(f);
@@ -122,6 +133,61 @@ test('PR-mutating jobs share one lock per PR; implementation locks per issue', (
   for (const f of REUSABLE) assert.doesNotMatch(read(f), /cancel-in-progress: true/);
 });
 
+test('persisted checkout credentials are removed before every Claude session', () => {
+  const covered = [];
+  for (const f of REUSABLE) {
+    for (const job of jobs(read(f))) {
+      const all = jobSteps(job);
+      const claude = all.filter((s) => s.uses.startsWith('anthropics/claude-code-action'));
+      if (!claude.length) continue;
+      const where = `${f}/${job.match(/^  ([a-z_-]+):/)[1]}`;
+      const at = (step) => all.indexOf(step);
+      const checkouts = all.filter((s) => s.uses.startsWith('actions/checkout'));
+      const cleanups = all.filter((s) => /node "\$AW" remove-checkout-credentials\n/.test(s.text));
+      assert.equal(checkouts.length, 1, `${where}: one checkout`);
+      assert.equal(cleanups.length, 1, `${where}: one cleanup step`);
+      const [checkout, cleanup] = [checkouts[0], cleanups[0]];
+      const setup = all.find((s) => s.name === 'Run setup script');
+      assert.ok(at(cleanup) > at(checkout), `${where}: cleanup runs after checkout persisted the credential`);
+      assert.ok(at(cleanup) > at(setup), `${where}: cleanup runs after setup.sh, which may still need the credential`);
+      assert.equal(cleanup.if, checkout.if, `${where}: cleanup runs whenever the repository is checked out`);
+      assert.doesNotMatch(cleanup.text, /continue-on-error|always\(\)/, `${where}: a failed cleanup stops the job`);
+      for (const step of claude) {
+        assert.ok(at(step) > at(cleanup), `${where}/${step.id}: Claude starts only after the cleanup`);
+        assert.doesNotMatch(step.if, /always\(\)|failure\(\)|cancelled\(\)/, `${where}/${step.id}: skipped when the cleanup fails`);
+        assert.doesNotMatch(step.text, /continue-on-error/, `${where}/${step.id}`);
+        covered.push(`${f}:${step.id}`);
+      }
+      for (const later of all.slice(at(cleanup) + 1)) {
+        assert.ok(!later.uses.startsWith('actions/checkout'), `${where}: nothing checks out again after the cleanup`);
+        assert.doesNotMatch(later.text, /extraheader|persist-credentials|credential\.helper|git config/, `${where}/${later.name}: nothing re-adds a git credential`);
+      }
+    }
+  }
+  // Path A, normal remediation, the read-only audit, the Opus escalation fix, /agent-fix.
+  assert.deepEqual(covered, ['implement.yml:claude', 'review.yml:claude', 'review.yml:audit', 'review.yml:final_fix', 'human-fix.yml:claude']);
+});
+
+test('every Claude session runs in agent mode, which installs its own credential before any git fetch', () => {
+  for (const f of REUSABLE) {
+    for (const s of steps(read(f)).filter((x) => x.text.includes('anthropics/claude-code-action'))) {
+      assert.match(s.text, /\n {10}prompt: \$\{\{ steps\.[a-z_]+\.outputs\.prompt \}\}\n/, `${f}: an explicit prompt selects agent mode`);
+      assert.doesNotMatch(s.text, /track_progress|branch_prefix|branch_name_template|trigger_phrase|label_trigger|assignee_trigger/, `${f}: no tag-mode inputs`);
+    }
+  }
+  // Path A therefore creates its branch itself, and later steps use that branch.
+  const implement = jobSteps(jobs(read('implement.yml')).find((j) => j.startsWith('  implement:')));
+  const create = implement.find((s) => s.name === 'Create work branch');
+  const claude = implement.find((s) => s.id === 'claude');
+  assert.ok(implement.indexOf(create) > implement.findIndex((s) => s.uses.startsWith('actions/checkout')));
+  assert.ok(implement.indexOf(create) < implement.indexOf(claude));
+  assert.match(create.text, /WORK_BRANCH: \$\{\{ steps\.preflight\.outputs\.branch \}\}\n {8}run: git switch --create "\$WORK_BRANCH"\n/);
+  for (const name of ['Render prompt', 'Finish implementation']) {
+    assert.match(implement.find((s) => s.name === name).text, /WORK_BRANCH: \$\{\{ steps\.preflight\.outputs\.branch \}\}/, name);
+  }
+  assert.doesNotMatch(read('implement.yml'), /outputs\.branch_name/, 'the branch never comes from Claude');
+});
+
 test('sessions triggered by Codex reviews allow only the Codex bot', () => {
   const review = steps(read('review.yml')).filter((s) => s.text.includes('anthropics/claude-code-action'));
   assert.equal(review.length, 3);
@@ -161,14 +227,14 @@ const VALIDATION = ['VALIDATION_OUTCOME', 'VALIDATION_RESULT'];
 const PAT = 'AGENT_GITHUB_TOKEN';
 const REQUIRED_ENV = {
   gate: ['GITHUB_TOKEN'],
-  'prompt implement': ['AW_CONFIG'],
+  'prompt implement': ['AW_CONFIG', 'WORK_BRANCH'],
   'prompt remediate': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF'],
   'prompt audit': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF'],
   'prompt final-fix': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF', 'AUDIT_FINDINGS', 'AUDIT_SUMMARY'],
   'prompt human-fix': ['AW_CONFIG', 'PR_NUMBER', 'HEAD_REF'],
   result: ['RAW_RESULT'],
   'preflight-implement': ['GITHUB_TOKEN', 'AW_CONFIG', 'ISSUE_NUMBER'],
-  'finish-implement': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'ISSUE_NUMBER', 'PREFLIGHT', 'SETUP_OUTCOME', 'CLAUDE_BRANCH', ...CLAUDE, ...VALIDATION],
+  'finish-implement': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'ISSUE_NUMBER', 'PREFLIGHT', 'SETUP_OUTCOME', 'WORK_BRANCH', ...CLAUDE, ...VALIDATION],
   'review-cycle': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER', 'ORIGIN'],
   'start-review': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER', 'ACTOR', 'VIA'],
   'plan-remediation': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER'],
@@ -177,6 +243,7 @@ const REQUIRED_ENV = {
   'finish-final-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'AUDIT_SUMMARY', ...CLAUDE, ...VALIDATION],
   'prepare-human-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'ACTOR'],
   'finish-human-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'PROCEED', 'SETUP_OUTCOME', ...CLAUDE, ...VALIDATION],
+  'remove-checkout-credentials': [],
 };
 
 test('every runtime step receives exactly the inputs its command reads', () => {
@@ -200,5 +267,5 @@ test('every runtime step receives exactly the inputs its command reads', () => {
       }
     }
   }
-  assert.equal(checked, 24);
+  assert.equal(checked, 27);
 });

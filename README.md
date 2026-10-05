@@ -129,7 +129,9 @@ admin access. Arbitrary issues and PRs are never touched.
 
 - No secrets in this repository. Consumers pass exactly three secrets explicitly.
 - Every job declares least-privilege permissions; `GITHUB_TOKEN` is read-only for
-  contents. Claude pushes with its own short-lived GitHub App token.
+  contents. Claude pushes with its own short-lived GitHub App token: the
+  `GITHUB_TOKEN` that `actions/checkout` leaves in git config is removed before
+  every Claude session, so git cannot push with it, and Claude never holds it.
 - The PAT (`AGENT_GITHUB_TOKEN`) is used only to open PRs and request Codex
   reviews, and is never exposed to Claude's environment.
 - Fork PRs, closed PRs, protected head branches and base/default branches are
@@ -172,8 +174,9 @@ npm test          # node:test, no dependencies, no network
 ```
 
 CI also runs [actionlint](https://github.com/rhysd/actionlint) over the reusable
-workflows and over wrappers rendered to call them locally, and a self-test that
-fetches the runtime at the workflow commit exactly as consumers do.
+workflows and over wrappers rendered to call them locally, a self-test that
+fetches the runtime at the workflow commit exactly as consumers do, and the
+checkout credential cleanup against a real `actions/checkout@v7` checkout.
 
 ## License
 

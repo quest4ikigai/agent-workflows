@@ -21,7 +21,7 @@ boundaries are where they are.
 
 | Credential | Held by | Used for | Never used for |
 | --- | --- | --- | --- |
-| `GITHUB_TOKEN` (built-in) | every job | reading the repository and config, status comments, labels, resolving review threads, checking permissions | pushing code (contents is **read-only**) |
+| `GITHUB_TOKEN` (built-in) | every job; never Claude (the copy `actions/checkout` persists is removed before Claude starts) | reading the repository and config, status comments, labels, resolving review threads, checking permissions | pushing code (contents is **read-only**) |
 | Claude GitHub App token | the `claude-code-action` step only | Claude's commits and pushes; short-lived, scoped to this repository, revoked when the step ends | — |
 | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | the `claude-code-action` step | model access | GitHub operations |
 | `AGENT_GITHUB_TOKEN` (PAT) | dedicated runtime steps only | opening Path A PRs (so CI runs) and posting `@codex review` (Codex ignores `github-actions[bot]`); polling review status | anything in Claude's environment; pushing code |
@@ -40,6 +40,37 @@ Two GitHub/Codex behaviours make the built-in token insufficient:
 
 Everything else moved off the PAT (the original Mealie workflow used it for every
 GitHub call), which also means it no longer needs write access to code.
+
+### Why only Claude's GitHub App token can push
+
+`GITHUB_TOKEN` and the PAT both stay **Contents: read-only**, on purpose:
+
+- **`GITHUB_TOKEN`.** Pushes made with it start no workflows. If it could
+  push, a push that picked it up by mistake would succeed silently, and CI and
+  the Codex loop would never run on the agent's commit while the PR still showed
+  the previous green checks. Read-only turns that mistake into a visible
+  `403 Write access to repository not granted`.
+- **`AGENT_GITHUB_TOKEN`.** It exists to open PRs and request reviews as a
+  Codex-connected user. It never reaches Claude, so it never pushes, and write
+  access would only widen what a leaked PAT could do.
+
+Claude pushes with the GitHub App token that `claude-code-action` obtains through
+OIDC. That token's pushes trigger workflows normally, and it lasts only as long as
+the step.
+
+`actions/checkout` keeps `GITHUB_TOKEN` in git config for the whole job, through a
+file included with `includeIf.gitdir` (checkout v6 and later), and git sends it in
+preference to the App token. claude-code-action@v1 does not remove that file's
+header
+([anthropics/claude-code-action#1721](https://github.com/anthropics/claude-code-action/issues/1721)).
+So every job that runs Claude removes it in a **Remove persisted checkout
+credentials** step after `setup.sh` and before the first Claude session. The step
+fails closed if git would still send an `Authorization` header afterwards, and it
+never prints token values. Details:
+[architecture.md](architecture.md#git-credentials-in-claude-sessions).
+
+If Claude's push fails with a 403, do not widen either token. See the
+[troubleshooting entry](installation.md#troubleshooting).
 
 ## Workflow permissions
 
@@ -103,7 +134,9 @@ it.
 ## Review-state integrity
 
 - The status comment is trusted only when authored by `github-actions[bot]`. A
-  human pasting `<!-- passes=0 -->` cannot reset the remediation budget.
+  human pasting `<!-- passes=0 -->` cannot reset the remediation budget, and
+  Claude cannot post as `github-actions[bot]`: the `GITHUB_TOKEN` copy that
+  `actions/checkout` persists is removed before every Claude session.
 - The origin of a Codex review (which decides whether it consumes budget) is taken
   only from `@codex review` comments posted by the PAT owner with an origin
   marker; any other request counts as `manual`.
@@ -127,8 +160,9 @@ Mitigations:
 
 - user text is passed through files/outputs, never interpolated into shell;
   prompts fence it, and `$GITHUB_OUTPUT` uses random heredoc delimiters;
-- Claude holds no long-lived credential: the PAT is absent from its environment
-  and its GitHub token is short-lived and repository-scoped;
+- Claude holds no long-lived credential: the PAT is absent from its environment,
+  the workflow `GITHUB_TOKEN` that `actions/checkout` persists is removed before it
+  starts, and its own GitHub token is short-lived and repository-scoped;
 - the read-only audit runs without edit tools, and the workflow verifies the
   branch head did not move during the audit;
 - every Claude change is followed by deterministic validation, independent Codex

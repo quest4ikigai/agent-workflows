@@ -132,6 +132,16 @@ jobs:
           ref: ${{ fromJSON(needs.gate.outputs.config).base_branch }}
           fetch-depth: 0
 
+      # Created here so claude-code-action runs in agent mode. Its tag mode
+      # (track_progress) runs `git fetch` before installing its own credential,
+      # which fails on private repositories once the checkout credential is
+      # removed below (anthropics/claude-code-action#1711).
+      - name: Create work branch
+        if: steps.preflight.outputs.proceed == 'true'
+        env:
+          WORK_BRANCH: ${{ steps.preflight.outputs.branch }}
+        run: git switch --create "$WORK_BRANCH"
+
       - name: Set up Node.js
         if: steps.preflight.outputs.proceed == 'true' && fromJSON(needs.gate.outputs.config).setup.node_version
         uses: actions/setup-node@v7
@@ -156,9 +166,19 @@ jobs:
           if [ ! -f "$SCRIPT" ]; then echo "::error::Setup script $SCRIPT (setup.script) not found."; exit 1; fi
           bash "$SCRIPT"
 
+      # actions/checkout persists GITHUB_TOKEN (contents: read) in an included git
+      # config file. git would send it instead of the GitHub App token Claude pushes
+      # with, so it is removed after setup (which may still need it) and before
+      # Claude starts. See lib/runtime/credentials.mjs.
+      - name: Remove persisted checkout credentials
+        if: steps.preflight.outputs.proceed == 'true'
+        run: node "$AW" remove-checkout-credentials
+
       - name: Render prompt
         id: prompt
         if: steps.preflight.outputs.proceed == 'true'
+        env:
+          WORK_BRANCH: ${{ steps.preflight.outputs.branch }}
         run: node "$AW" prompt implement
 
       - name: Implement with Claude
@@ -169,9 +189,6 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           base_branch: ${{ fromJSON(needs.gate.outputs.config).base_branch }}
-          branch_prefix: ${{ fromJSON(needs.gate.outputs.config).branch_prefix }}
-          branch_name_template: "{{prefix}}issue-{{entityNumber}}-{{description}}"
-          track_progress: true
           additional_permissions: |
             actions: read
           prompt: ${{ steps.prompt.outputs.prompt }}
@@ -214,7 +231,7 @@ jobs:
           SETUP_OUTCOME: ${{ steps.setup.outcome }}
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
           CLAUDE_CONCLUSION: ${{ steps.claude.outputs.conclusion }}
-          CLAUDE_BRANCH: ${{ steps.claude.outputs.branch_name }}
+          WORK_BRANCH: ${{ steps.preflight.outputs.branch }}
           RAW_RESULT: ${{ steps.claude.outputs.structured_output }}
           VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
           VALIDATION_RESULT: ${{ steps.validate.outputs.result }}

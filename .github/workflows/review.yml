@@ -214,6 +214,14 @@ jobs:
           if [ ! -f "$SCRIPT" ]; then echo "::error::Setup script $SCRIPT (setup.script) not found."; exit 1; fi
           bash "$SCRIPT"
 
+      # actions/checkout persists GITHUB_TOKEN (contents: read) in an included git
+      # config file. git would send it instead of the GitHub App token Claude pushes
+      # with, so it is removed after setup (which may still need it) and before
+      # Claude starts. See lib/runtime/credentials.mjs.
+      - name: Remove persisted checkout credentials
+        if: steps.plan.outputs.mode == 'remediate' || steps.plan.outputs.mode == 'escalate'
+        run: node "$AW" remove-checkout-credentials
+
       # ---- Normal remediation -------------------------------------------------
 
       - name: Render remediation prompt

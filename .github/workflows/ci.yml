@@ -58,6 +58,32 @@ jobs:
           grep -q 'Everything is already up to date.' "$RUNNER_TEMP/second-run.txt"
           node bin/agent-workflows.mjs check "$repo" --offline
 
+  checkout-credentials:
+    name: Checkout credential cleanup (live actions/checkout)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # Same checkout as the reusable workflows: persists GITHUB_TOKEN by default.
+      - uses: actions/checkout@v7
+      # git config exits 0 when a matching entry exists; its output (the header) is discarded.
+      - name: Confirm checkout persisted its token through includeIf.gitdir
+        run: |
+          set -euo pipefail
+          git config --local --name-only --get-regexp '^includeif\.gitdir:'
+          git config --includes --get-regexp '^http\.https://github\.com/\.extraheader$' '^AUTHORIZATION:' > /dev/null
+      - name: Remove persisted checkout credentials
+        run: node lib/runtime/main.mjs remove-checkout-credentials
+      - name: Verify the credential is gone and the cleanup is idempotent
+        run: |
+          set -euo pipefail
+          if git config --includes --get-regexp '^http\.https://github\.com/\.extraheader$' '^AUTHORIZATION:' > /dev/null; then
+            echo "::error::actions/checkout's credential is still active after the cleanup."
+            exit 1
+          fi
+          git config --local --name-only --get-regexp '^includeif\.gitdir:' > /dev/null # left for checkout's post-job cleanup
+          node lib/runtime/main.mjs remove-checkout-credentials | tee "$RUNNER_TEMP/second-run.txt"
+          grep -q 'nothing to remove' "$RUNNER_TEMP/second-run.txt"
+
   tooling:
     name: Tooling self-test
     uses: ./.github/workflows/selftest.yml

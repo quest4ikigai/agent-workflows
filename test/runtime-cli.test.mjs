@@ -3,7 +3,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -58,10 +58,11 @@ test('prompt command writes multi-line prompt and claude_args outputs', () => {
   const hostile = 'Contract\nAW_EOF_x\nEOF\nname=value';
   const r = runMain(['prompt', 'implement'], {
     event: { issue: { number: 4, title: '[agent-build] T', body: hostile } },
-    env: { AW_CONFIG: JSON.stringify(defaultConfig()) },
+    env: { AW_CONFIG: JSON.stringify(defaultConfig()), WORK_BRANCH: 'claude/issue-4-t' },
   });
   assert.equal(r.status, 0, r.stderr + r.stdout);
   assert.match(r.outputs.prompt, /issue #4/);
+  assert.match(r.outputs.prompt, /You are on `claude\/issue-4-t`/);
   assert.ok(r.outputs.prompt.includes(hostile), 'user text survives intact inside the heredoc');
   assert.match(r.outputs.claude_args, /^--model sonnet\n--max-turns 40\n/);
 });
@@ -86,6 +87,37 @@ test('API commands demand a token; prompt/result run without one (as in the work
   const r = runMain(['review-cycle'], { event: {}, env: { AW_CONFIG: JSON.stringify(defaultConfig()) } });
   assert.equal(r.status, 1);
   assert.match(r.stdout, /GITHUB_TOKEN is required for review-cycle/);
+});
+
+test('remove-checkout-credentials needs no token, never prints the credential and fails closed', () => {
+  const root = realpathSync(tempDir());
+  const repo = path.join(root, 'widget');
+  const credentials = path.join(root, 'git-credentials-3f2a.config');
+  const token = Buffer.from('x-access-token:ghs_checkoutTOKEN').toString('base64');
+  const env = {
+    HOME: root,
+    GIT_CONFIG_NOSYSTEM: '1',
+    GIT_CONFIG_GLOBAL: path.join(root, '.gitconfig'),
+    GITHUB_WORKSPACE: repo,
+    GITHUB_SERVER_URL: 'https://github.com',
+  };
+  const git = (...args) => assert.equal(spawnSync('git', args, { cwd: repo, env: { PATH: process.env.PATH, ...env } }).status, 0, args.join(' '));
+  mkdirSync(repo);
+  git('init', '-q');
+  git('config', '--file', credentials, 'http.https://github.com/.extraheader', `AUTHORIZATION: basic ${token}`);
+  git('config', `includeIf.gitdir:${repo}/.git.path`, credentials);
+
+  const r = runMain(['remove-checkout-credentials'], { event: {}, env });
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.match(r.stdout, /^Removed persisted actions\/checkout GitHub credential from 1 included config file\.$/m);
+  assert.ok(!readFileSync(credentials, 'utf8').includes(token));
+
+  writeFileSync(env.GIT_CONFIG_GLOBAL, `[http "https://github.com/"]\n\textraheader = AUTHORIZATION: basic ${token}\n`);
+  const blocked = runMain(['remove-checkout-credentials'], { event: {}, env });
+  assert.equal(blocked.status, 1);
+  assert.match(blocked.stdout, /::error::git still sends an Authorization header to https:\/\/github\.com \(configured in .*\.gitconfig\)/);
+  assert.equal(blocked.stderr, '', 'reported as an annotation, without a stack trace');
+  for (const out of [r, blocked]) assert.ok(!(out.stdout + out.stderr).includes(token), 'credential never printed');
 });
 
 test('Outputs never lets a value terminate its own heredoc', () => {
