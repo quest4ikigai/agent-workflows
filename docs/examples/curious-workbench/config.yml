@@ -43,8 +43,11 @@ human_fix:
   timeout_minutes: 75
 
 # How long a workflow waits for Codex to finish a review (0 = do not wait).
+# Set to 0 here: jobs request the review and exit instead of holding a runner
+# while polling. Codex findings still start remediation when they arrive; the
+# status comment just shows "requested" rather than the final review outcome.
 codex:
-  wait_minutes: 15
+  wait_minutes: 0
 
 # Environment prepared before Claude starts.
 setup:
