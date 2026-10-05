@@ -74,12 +74,8 @@ cd /path/to/your/repository
 npx --yes github:quest4ikigai/agent-workflows#v1 install .
 ```
 
-Until `v1` is tagged (see [Versioning](#versioning)), install from a commit or
-branch instead, for example:
-
-```bash
-npx --yes github:quest4ikigai/agent-workflows#main install . --ref main
-```
+The wrappers call `@v1`, which receives every backwards-compatible fix. To freeze
+a release instead, add `--ref v1.0.0` (see [Versioning](#versioning)).
 
 Or work from a clone:
 
@@ -153,9 +149,8 @@ Consumers pin a release: `uses: quest4ikigai/agent-workflows/.github/workflows/r
 - Breaking changes to wrappers, config schema, secrets or triggers require a new
   major version. `agent-workflows install --ref v2` upgrades a consumer.
 
-See [docs/versioning.md](docs/versioning.md) for the release procedure. `v1` has
-not been tagged yet: it will be cut after the workflows have been exercised in the
-first consumer repositories.
+See [docs/versioning.md](docs/versioning.md) for the release procedure and
+[CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## Documentation
 

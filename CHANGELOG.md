@@ -3,7 +3,7 @@
 All notable changes are documented here. Releases follow
 [semantic versioning](docs/versioning.md); consumers pin `@vX` or `@vX.Y.Z`.
 
-## Unreleased (1.0.0)
+## 1.0.0 — 2026-10-05
 
 Initial version, extracted and generalized from the mealie-mcp-server agent
 workflow.

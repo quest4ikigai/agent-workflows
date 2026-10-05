@@ -37,8 +37,8 @@ npx --yes github:quest4ikigai/agent-workflows#v1 install . --dry-run
 npx --yes github:quest4ikigai/agent-workflows#v1 install .
 ```
 
-> Before `v1` is tagged, use a commit SHA or `main` in both places, e.g.
-> `npx --yes github:quest4ikigai/agent-workflows#<sha> install . --ref <sha>`.
+> The wrappers call `@v1`, which receives every backwards-compatible fix. To
+> freeze a release instead, add `--ref v1.0.0`; see [versioning.md](versioning.md).
 
 The installer infers:
 

@@ -71,9 +71,15 @@ npx --yes github:quest4ikigai/agent-workflows#v2 check .
 
 `install` rewrites only untouched wrappers; it reports anything you edited.
 
-## Current status
+A consumer pinned to a commit SHA (for example while testing an unreleased
+commit) moves to a release the same way:
 
-`v1` has **not** been tagged. The first consumers (Mealie MCP, Curious Workbench)
-should run against a commit SHA. Once both paths have been exercised end to end
-in a real repository, tag `v1.0.0` and `v1` and reinstall consumers with
-`--ref v1`.
+```bash
+npx --yes github:quest4ikigai/agent-workflows#v1 install . --ref v1
+```
+
+## Release history
+
+Release notes are in [CHANGELOG.md](../CHANGELOG.md). `v1.0.0` was the first
+release, tagged after Path A, Path B, Codex review and `/agent-fix` had been
+exercised end to end in Curious Workbench.

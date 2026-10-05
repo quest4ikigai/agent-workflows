@@ -384,7 +384,8 @@ Verified against GitHub documentation in October 2026.
 12. **Claude GitHub App token exchange validates the caller workflow file against
     the default branch.** A PR that edits a wrapper cannot run agent jobs until the
     edit is merged. Cross-repository reusable workflows have been supported by the
-    exchange since August 2025 but must be verified live in the first consumer.
+    exchange since August 2025, and were verified live in Curious Workbench before
+    `v1.0.0`.
 13. **`uses:` cannot be an expression.** Third-party action versions are pinned
     centrally in the reusable workflows.
 14. **`pull_request` and `pull_request_review` workflows do not run while a PR has
