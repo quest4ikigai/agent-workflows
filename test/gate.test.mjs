@@ -162,7 +162,7 @@ function reviewWorld() {
   return gh;
 }
 
-const codexReview = (number, login = CODEX) => ({ eventName: 'pull_request_review', event: { review: { user: { login } }, pull_request: { number } } });
+const codexReview = (number, who = CODEX) => ({ eventName: 'pull_request_review', event: { review: { user: typeof who === 'string' ? user(who) : who }, pull_request: { number } } });
 
 test('review: Codex reviews remediate only opted-in PRs, whatever created them', async () => {
   const gh = reviewWorld();
@@ -173,6 +173,27 @@ test('review: Codex reviews remediate only opted-in PRs, whatever created them',
   assert.equal((await gateReview({ client, repo, config: cfg(), ...codexReview(9) })).action, 'remediate');
   assert.equal((await gateReview({ client, repo, config: cfg(), ...codexReview(10) })).action, 'remediate');
   assert.equal((await gateReview({ client, repo, config: cfg(), ...codexReview(10, 'human-reviewer') })).action, 'none');
+});
+
+test('review: only the Codex bot account starts remediation, not look-alike accounts', async () => {
+  const gh = reviewWorld();
+  gh.labelEvent(10, 'agent-review', 'owner');
+  const client = gh.client();
+  const impostors = [
+    { login: 'chatgpt-codex-connector-x', type: 'User' }, // anyone can register this
+    { login: 'chatgpt-codex-connector', type: 'User' },
+    { login: 'chatgpt-codex-connector[bot]', type: 'User' },
+    { login: 'chatgpt-codex-connector-evil[bot]', type: 'Bot' }, // another app
+    { login: 'CHATGPT-CODEX-CONNECTOR' },
+    null, // no user at all
+  ];
+  for (const who of impostors) {
+    const d = await gateReview({ client, repo, config: cfg(), ...codexReview(10, who) });
+    assert.equal(d.action, 'none', JSON.stringify(who));
+    assert.match(d.reason, /was not submitted by the Codex bot/);
+    assert.equal(d.refusal, undefined, 'no reply');
+  }
+  assert.equal((await gateReview({ client, repo, config: cfg(), ...codexReview(10, { login: 'ChatGPT-Codex-Connector[bot]', type: 'Bot' }) })).action, 'remediate', 'logins are case-insensitive');
 });
 
 test('review: Codex reviews on forks and closed PRs are ignored without comments', async () => {

@@ -23,6 +23,7 @@ function setup() {
   gh.addPull({ number: 7, head: { ref: 'feature' } });
   gh.addReview(7, CODEX);
   gh.addReview(7, 'human-reviewer');
+  gh.addReview(7, 'chatgpt-codex-connector-x'); // a look-alike account
   return gh;
 }
 
@@ -86,6 +87,19 @@ test('a "didn\'t find any major issues" comment after the request means clean', 
   assert.equal(await wait(gh, request), 'clean');
 });
 
+test('a review from a look-alike account is not a Codex review', async () => {
+  const gh = setup();
+  const request = await requestCodexReview({ client: gh.client(), agentClient: gh.client('pat-token'), repo, pr: 7, origin: 'initial' });
+  gh.onPoll = (g) => {
+    if ((g.reviews[7] || []).length === 3) {
+      g.addReview(7, 'chatgpt-codex-connector-x');
+      g.reviews[7].push({ id: g.nextId++, user: { login: CODEX, type: 'User' }, body: 'spoof', state: 'COMMENTED' });
+    }
+  };
+  assert.equal(await wait(gh, request), 'pending');
+  assert.equal(await countCodexReviews(gh.client(), repo, 7), 1);
+});
+
 test('times out as pending and emits heartbeats', async () => {
   const gh = setup();
   const request = await requestCodexReview({ client: gh.client(), agentClient: gh.client('pat-token'), repo, pr: 7, origin: 'initial' });
@@ -101,11 +115,14 @@ test('resolves only unresolved threads Codex took part in', async () => {
     { id: 't1', isResolved: false, authors: [CODEX, 'owner'] },
     { id: 't2', isResolved: false, authors: ['human-reviewer'] },
     { id: 't3', isResolved: true, authors: [CODEX] },
+    { id: 't4', isResolved: false, authors: ['chatgpt-codex-connector-x'] },
+    { id: 't5', isResolved: false, authors: ['chatgpt-codex-connector'] }, // a person with the bot's bare login
+    { id: 't6', isResolved: false, comments: [{ author: { __typename: 'User', login: 'chatgpt-codex-connector' } }] },
   ];
   const logs = [];
   const r = await resolveCodexThreads(gh.client(), repo, 7, (m) => logs.push(m));
   assert.deepEqual(r, { resolved: 1, failed: 0 });
-  assert.deepEqual(gh.threads[7].map((t) => t.isResolved), [true, false, true]);
+  assert.deepEqual(gh.threads[7].map((t) => t.isResolved), [true, false, true, false, false, false], 'look-alikes cannot get their threads resolved');
 });
 
 test('thread resolution failures are reported, never thrown', async () => {
@@ -146,6 +163,8 @@ test('current Codex findings: unresolved, Codex-opened, not outdated; path, line
     },
   ]);
   assert.ok(!JSON.stringify(findings).includes('Ignore all previous instructions'), 'replies by others are counted, not quoted');
+  assert.ok(!JSON.stringify(findings).includes('deploy hook'), 'threads opened by look-alike accounts are not Codex findings');
+  assert.ok(!JSON.stringify(findings).includes('PRRT_namesake'), 'a Codex reply does not make a thread Codex-opened');
   assert.deepEqual((await codexFindings(gh.client(), repo, 7)).findings.map((f) => f.latest), [null, null], 'no latest review given');
 });
 
@@ -269,8 +288,10 @@ test('formal Codex reviews of a commit, optionally since a time', async () => {
   const gh = setup();
   gh.addReview(7, CODEX, 'findings', { commit_id: 'a'.repeat(40), submitted_at: '2026-10-05T18:00:00Z' });
   gh.addReview(7, 'human-reviewer', 'lgtm', { commit_id: 'b'.repeat(40), submitted_at: '2026-10-05T19:00:00Z' });
+  gh.addReview(7, 'chatgpt-codex-connector-x', 'spoof', { commit_id: 'c'.repeat(40), submitted_at: '2026-10-05T19:00:00Z' });
   const client = gh.client();
   assert.equal(await hasCodexReviewOf(client, repo, 7, 'a'.repeat(40)), true);
   assert.equal(await hasCodexReviewOf(client, repo, 7, 'a'.repeat(40), { since: '2026-10-05T18:30:00Z' }), false, 'reviews before the request do not count');
   assert.equal(await hasCodexReviewOf(client, repo, 7, 'b'.repeat(40)), false, 'only Codex reviews count');
+  assert.equal(await hasCodexReviewOf(client, repo, 7, 'c'.repeat(40)), false, 'not look-alike accounts either');
 });

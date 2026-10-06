@@ -119,9 +119,13 @@ cannot read another private repository.
 | agent-implement | `issues.labeled` | label `agent-build` | implement (Path A, also the retry mechanism) |
 | agent-review | `pull_request.labeled` | label `agent-review` | start review cycle (Path B opt-in) |
 | agent-review | `issue_comment.created` | PR comment starting `/agent-review` | start/restart review cycle |
-| agent-review | `pull_request_review.submitted` | reviewer login starts `chatgpt-codex-connector` | remediation / escalation |
+| agent-review | `pull_request_review.submitted` | reviewer is a `Bot` whose login starts `chatgpt-codex-connector` | remediation / escalation |
 | agent-review | `issue_comment.created` / `.edited` | Codex bot comment containing its review-summary marker or "find any major issues" | record a completed Codex review |
 | agent-human-fix | `issue_comment.created` | PR comment starting `/agent-fix` | human-requested fix |
+
+The gate then requires the exact Codex bot account (see
+[security.md](security.md#trust-model)); the pre-filters only keep unrelated
+events from starting a runner.
 
 Trigger words and label names are fixed conventions rather than configuration,
 because the wrapper pre-filters have to know them without reading the repository.
@@ -319,8 +323,8 @@ Every review request is recorded with the full head SHA (`review_sha`) and
 `review_status=requested`. A completion signal changes the state only when, in
 the PR lock:
 
-1. the comment's author is the Codex bot account (`chatgpt-codex-connector[bot]`,
-   type `Bot`), whatever the text says;
+1. the comment's author is the Codex bot account (exact login and type `Bot`),
+   whatever the text says;
 2. the PR is open, from this repository, and opted in;
 3. the commit the signal names (at least 7 hex characters) is a prefix of
    `review_sha`;

@@ -157,6 +157,7 @@ test('review wrapper starts a run for commands, Codex reviews and Codex completi
     ['Codex summary on an issue', comment('edited', codexSummary(), user(CODEX), false), false],
     ['Codex review', { event_name: 'pull_request_review', event: { review: { user: user(CODEX) } } }, true],
     ['human review', { event_name: 'pull_request_review', event: { review: { user: user('owner') } } }, false],
+    ['look-alike human review', { event_name: 'pull_request_review', event: { review: { user: { login: 'chatgpt-codex-connector-x', type: 'User' } } } }, false],
     ['agent-review label', { event_name: 'pull_request', event: { label: { name: 'agent-review' } } }, true],
     ['other label', { event_name: 'pull_request', event: { label: { name: 'bug' } } }, false],
   ];

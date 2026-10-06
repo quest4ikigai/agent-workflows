@@ -99,8 +99,19 @@ that calls the reusable workflow; called jobs can only reduce it.
 | `agent-build` label | labeler trusted **and** issue author trusted (the design contract must come from a trusted user, and cannot be swapped by an untrusted author later) |
 | `agent-review` label | labeler trusted; otherwise the label is removed and the reason posted |
 | `/agent-review`, `/agent-fix` | commenter trusted; untrusted commenters are ignored without a reply, so the bot cannot be used to amplify spam |
-| Codex review | reviewer login is the Codex app, and the PR is opted in |
-| Codex completion comment (summary edit or clean result) | author is the Codex bot account (`chatgpt-codex-connector[bot]`, type `Bot`), never a look-alike login or pasted text; the body is a recognized format; the PR is opted in; the reported commit identifies the recorded review SHA, which is still the PR head |
+| Codex review | reviewer is the Codex bot account, and the PR is opted in |
+| Codex completion comment (summary edit or clean result) | author is the Codex bot account; the body is a recognized format; the PR is opted in; the reported commit identifies the recorded review SHA, which is still the PR head |
+
+**The Codex bot account** is matched exactly, everywhere: REST user
+`chatgpt-codex-connector[bot]` with type `Bot`, or GraphQL actor
+`chatgpt-codex-connector` with type `Bot`. Never a login prefix: on a public
+repository anyone can register an account such as `chatgpt-codex-connector-x`,
+and people cannot register `[bot]` logins or be typed `Bot`. A look-alike
+account's reviews start no remediation and do not count as Codex reviews, its
+threads are neither Codex findings in Claude's prompt nor resolved by the
+automation, and its comments and reactions complete nothing. The wrapper
+pre-filters check only the type and login prefix, to stay cheap; the runtime
+decides.
 
 **Opted in** means the PR carries `agent-review` and the most recent application
 of that label (from the issue events API) was by a trusted user or by
@@ -166,8 +177,8 @@ is never used.
 
 Inputs reaching Claude: the issue body (trusted author), PR descriptions and
 review comments, Codex review text, the unresolved Codex inline findings the
-workflow collects (only comments authored by Codex are quoted), and `/agent-fix`
-feedback (trusted author).
+workflow collects (only threads opened by the Codex bot account, and only its
+own comments, are quoted), and `/agent-fix` feedback (trusted author).
 Mitigations:
 
 - user text is passed through files/outputs, never interpolated into shell;

@@ -168,6 +168,9 @@ the review body. Details:
   refused. Untrusted command authors get no response.
 - Review state is only trusted from `github-actions[bot]` comments, so the
   remediation budget cannot be forged.
+- Codex is recognized only as its exact bot account, never by login prefix, so a
+  look-alike account cannot trigger remediation, plant "findings" in Claude's
+  prompt, or mark a review complete.
 - Automation never merges and never approves.
 
 Details: [docs/security.md](docs/security.md).

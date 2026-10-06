@@ -59,6 +59,21 @@ the workflow.
   the end of monitoring, not as a Codex failure. `/agent-fix` ends the wait for a
   pending review.
 
+### Exact Codex identity
+
+Codex was recognized by login prefix, so on a public repository anyone who
+registered an account such as `chatgpt-codex-connector-x` could submit a review
+on an opted-in PR and start remediation, with their review threads injected into
+Claude's prompt as "authoritative" Codex findings.
+
+- Every Codex check now requires the Codex GitHub App's bot account: REST user
+  `chatgpt-codex-connector[bot]` with type `Bot`, or GraphQL actor
+  `chatgpt-codex-connector` with type `Bot`. This covers the review gate, review
+  counting while polling, the formal-review lookup, the inline findings handed to
+  Claude, and Codex thread resolution, as well as completion signals.
+- The review wrapper's `pull_request_review` pre-filter also requires a `Bot`
+  reviewer. Re-run `install` to regenerate it; the runtime check applies either way.
+
 ## 1.0.0 — 2026-10-05
 
 Initial version, extracted and generalized from the mealie-mcp-server agent

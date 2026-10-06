@@ -318,7 +318,8 @@ test('remediation plan: collects current unresolved Codex findings for the promp
   ctx.event = { review: { id: review.id, body: '' } };
   await flows.planRemediation(ctx, { pr: 9 });
   const collected = JSON.parse(ctx.outputs.values.codex_findings);
-  assert.deepEqual(collected.findings.map((f) => f.thread), ['PRRT_drift', 'PRRT_ico'], 'resolved, outdated and human threads excluded');
+  assert.deepEqual(collected.findings.map((f) => f.thread), ['PRRT_drift', 'PRRT_ico'], 'resolved, outdated, human and look-alike threads excluded');
+  assert.ok(!ctx.outputs.values.codex_findings.includes('deploy hook'), 'a look-alike account cannot inject "findings" into the prompt');
   assert.deepEqual(collected.findings.map((f) => f.latest), [true, false]);
   assert.equal(collected.outdated, 1);
 
