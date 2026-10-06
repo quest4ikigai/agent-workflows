@@ -180,6 +180,7 @@ State is a single PR comment written by `github-actions[bot]`:
 <!-- review_origin=human-fix -->
 <!-- review_requested_at=2026-10-05T18:46:00Z -->
 <!-- review_request_id=3412345678 -->
+<!-- addressed_threads=PRRT_kwDOUUJ5e86pINYh@53d8ae2…,PRRT_kwDOUUJ5e86pINYp@53d8ae2… -->
 ### Agent review status
 **Stage:** Codex review after owner-requested fix requested; awaiting completion signal.
 **Codex review:** Awaiting completion signal
@@ -193,8 +194,10 @@ This comment is the authoritative status of the automation. Only comments
 authored by `github-actions[bot]` are trusted as state, so a human cannot
 accidentally (or deliberately) reset the budget by pasting the markers, and
 markers are read only above the heading, so text quoted in the details cannot
-add any. The `review_*` markers track the Codex review being awaited; state
-written before they existed simply has none.
+add any. The `review_*` markers track the Codex review being awaited, and
+`addressed_threads` lists Codex threads fixed by verified pushes, each with the
+commit that fixed it (see below); state written before they existed simply has
+none.
 
 Each Codex review request is a comment posted with `AGENT_GITHUB_TOKEN`:
 
@@ -227,10 +230,33 @@ otherwise                                   → remediate
 ```
 
 **Remediate:** Claude (remediation.model) addresses the current Codex findings.
-When it returns a verified `fixed` (see below), the workflow re-runs validation,
-resolves Codex threads, increments `passes` when the review was countable, and
-requests a re-review (origin=remediation). `blocked`, `no_change` and invalid
-results stop for a human without requesting a review.
+When it returns a verified `fixed` (see below) and validation passes, the workflow
+records those findings' threads as addressed, increments `passes` when the review
+was countable, and requests a re-review (origin=remediation). `blocked`,
+`no_change` and invalid results stop for a human without requesting a review.
+
+**Addressed threads:** GitHub's `resolveReviewThread` requires Contents: write
+(Pull requests: write is not enough), and no agent-workflows token has it: that
+is what keeps pushes on Claude's short-lived App token. So fixed Codex threads
+stay open on GitHub, and the state comment records the fix instead. Only
+evidence of a fix counts, never a judgement:
+
+| Event | Effect on a Codex finding |
+| --- | --- |
+| Remediation pass with a verified push and passing validation | the findings Claude was given are recorded as addressed by the pushed head (`thread@sha`) |
+| A human resolves the thread on GitHub | addressed (resolved threads are never findings) |
+| The read-only final audit judges it invalid, already fixed or non-actionable | nothing; it awaits a human decision |
+| The final fix (given the audit's findings, not the threads), `no_change`, `blocked`, an invalid result, or a fix that fails validation | nothing |
+
+A record counts only while the branch still contains its fix: the current head
+must be that commit or descend from it, which GitHub's compare API answers.
+Merging the base branch keeps the fix as an ancestor. A rebase, squash or
+force-push that drops it voids the proof, so the finding is listed in prompts and
+blocks readiness again; so does any commit or comparison GitHub cannot answer.
+Addressed findings are left out of later prompts and do not block readiness;
+any other open, non-outdated Codex thread does. The workflow still tries to
+resolve exactly the threads a verified pass fixed, stopping at the first
+refusal, and the status comment says how many stay open for the human.
 
 **Budget accounting:** a pass is consumed only when a countable remediation
 actually pushes a branch mutation, that is, Claude returns `fixed` and the
@@ -239,7 +265,9 @@ results and crashed runs consume nothing. A verified fix whose validation fails
 keeps its pass (the branch did change) and pauses for a human.
 
 **Escalate:** Opus runs a read-only holistic audit of the whole PR. The workflow
-verifies the audit did not push anything. `clean` → final=complete;
+verifies the audit did not push anything. `clean` → final=complete (open Codex
+findings the audit judged non-actionable are left for a human decision, and the
+PR is not called ready while any remain);
 `blocked` → final=blocked; `findings` → a separate Opus session applies every
 valid finding in one pass. Only a verified `fixed` whose validation passes ends
 final=complete; `blocked`, `no_change`, an invalid result or failed validation end
@@ -275,7 +303,7 @@ commits says so.
 | Session | verified `fixed` / `implemented` | `blocked` | verified `no_change` | invalid |
 | --- | --- | --- | --- | --- |
 | Implementation | validate, open PR, request review | comment on the issue | comment on the issue | fail; no PR |
-| Remediation | validate, resolve Codex threads, count the pass, request re-review | stop for a human | stop for a human; Codex threads stay open | stop for a human |
+| Remediation | validate, record the findings as addressed, count the pass, request re-review | stop for a human | stop for a human; Codex threads stay open | stop for a human |
 | `/agent-fix` | validate, fresh budget, request review | stop for a human | report that nothing changed; no review | stop for a human |
 | Final fix | validate, final=complete | final=blocked | final=blocked | final=blocked |
 
@@ -294,8 +322,8 @@ lists the PR's review threads inside the PR lock and includes in the prompt ever
 **unresolved** thread opened by Codex whose code has not changed since (not
 **outdated**): path, line range, severity, title, thread ID, whether it came from
 the triggering review, and Codex's full comment text, fenced. Resolved threads are
-left out, outdated ones are counted but not listed, and replies by other users
-are counted, not quoted. The remediation prompt states that this list is
+left out, outdated and already addressed ones are counted but not listed, and
+replies by other users are counted, not quoted. The remediation prompt states that this list is
 authoritative and that an empty review body does not mean there are no findings.
 Without `/agent-fix` feedback the list is the work; with feedback it is context.
 
@@ -332,7 +360,8 @@ the PR lock:
 5. the PR head is still `review_sha`; otherwise the review is recorded as
    `outdated` and the PR is not ready;
 6. Codex submitted no pull request review of that commit since the request, and
-   no unresolved, non-outdated Codex threads remain; otherwise it is recorded as
+   no unresolved, non-outdated Codex threads remain apart from those fixed by a
+   verified push that is still in the branch; otherwise it is recorded as
    `findings` and the PR is not ready.
 
 Only then is it recorded as `clean`: "Codex review completed with no actionable

@@ -105,6 +105,9 @@ export class FakeGitHub {
     this.compare = {}; // "base...head" -> { ahead_by }
     // pr -> [{ id, isResolved, isOutdated?, path?, line?, startLine?, authors } or { …, comments: [{ author, body, review? }] }]
     this.threads = {};
+    // Tokens allowed to resolve review threads. GitHub requires Contents: write,
+    // which neither GITHUB_TOKEN nor the PAT has here, so by default none can.
+    this.canResolveThreads = new Set();
     this.calls = [];
     this.nextId = 1000;
     this.clock = Date.parse('2026-10-01T00:00:00Z');
@@ -174,7 +177,7 @@ export class FakeGitHub {
     const body = init.body ? JSON.parse(init.body) : undefined;
     const login = this.tokens[token];
     this.calls.push({ method, path: p + u.search, body, login });
-    const result = this.route(method, p, u.searchParams, body, login);
+    const result = this.route(method, p, u.searchParams, body, login, token);
     const status = result.status ?? 200;
     const data = result.data ?? null;
     return {
@@ -185,12 +188,12 @@ export class FakeGitHub {
     };
   }
 
-  route(method, p, query, body, login) {
+  route(method, p, query, body, login, token) {
     const R = `repos/${this.repo}`;
     const notFound = { status: 404, data: { message: 'Not Found' } };
     let m;
     if (p === 'user') return login && login !== BOT ? { data: { login } } : { status: 403, data: { message: 'Resource not accessible by integration' } };
-    if (p === 'graphql') return this.graphql(body);
+    if (p === 'graphql') return this.graphql(body, token);
     if (!p.startsWith(`${R}/`)) return notFound;
     const rest = p.slice(R.length + 1);
 
@@ -210,7 +213,7 @@ export class FakeGitHub {
     }
     if ((m = rest.match(/^compare\/(.+)$/))) {
       const c = this.compare[decodeURIComponent(m[1])];
-      if (c?.status) return { status: c.status, data: { message: 'compare failed' } };
+      if (typeof c?.status === 'number') return { status: c.status, data: { message: 'compare failed' } }; // an HTTP error
       return c ? { data: c } : notFound;
     }
     if (rest === 'pulls' && method === 'GET') {
@@ -262,8 +265,11 @@ export class FakeGitHub {
     return notFound;
   }
 
-  graphql(body) {
+  graphql(body, token) {
     if (body.query.includes('resolveReviewThread')) {
+      if (!this.canResolveThreads.has(token)) {
+        return { data: { data: { resolveReviewThread: null }, errors: [{ type: 'FORBIDDEN', path: ['resolveReviewThread'], message: 'Resource not accessible by integration' }] } };
+      }
       for (const list of Object.values(this.threads)) {
         const t = list.find((x) => x.id === body.variables.id);
         if (t) t.isResolved = true;

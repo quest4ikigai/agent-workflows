@@ -240,7 +240,7 @@ const REQUIRED_ENV = {
   'start-review': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER', 'ACTOR', 'VIA'],
   'plan-remediation': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER'],
   'record-codex-completion': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER'],
-  'finish-remediation': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'PASSES', 'COUNTABLE', 'HEAD_SHA', ...CLAUDE, ...VALIDATION],
+  'finish-remediation': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'PASSES', 'COUNTABLE', 'HEAD_SHA', 'CODEX_FINDINGS', ...CLAUDE, ...VALIDATION],
   'finish-audit': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', ...CLAUDE],
   'finish-final-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', 'AUDIT_SUMMARY', ...CLAUDE, ...VALIDATION],
   'prepare-human-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'ACTOR'],

@@ -24,6 +24,7 @@ import {
 after(cleanupTemp);
 
 const HEAD = 'abc1234def0123456789abcdef0123456789abcd';
+const FIX = '5678abcd'.repeat(5); // a remediation commit
 
 const ok = (status, extra = {}) => JSON.stringify({ status, summary: `summary for ${status}`, validation: 'ran validate.sh: passed', ...extra });
 const claudeOk = { claudeOutcome: 'success', claudeConclusion: 'success' };
@@ -383,16 +384,68 @@ const remediationInputs = (extra = {}) => ({
 
 const reviewRequests = (gh) => gh.issueComments(9).filter((c) => c.body.startsWith('@codex review'));
 
-test('remediation finish: a fixed result with a pushed commit resolves threads, consumes the pass, requests re-review', async () => {
+test('remediation finish: a verified fix records the findings it was given as addressed by its commit', async () => {
+  const { gh, ctx } = prWorld({ passes: 1 });
+  gh.pulls[9].head.sha = FIX;
+  gh.threads[9] = [
+    { id: 't1', isResolved: false, authors: [CODEX] },
+    { id: 't2', isResolved: false, authors: [CODEX] },
+    { id: 't3', isResolved: false, isOutdated: true, authors: [CODEX] },
+    { id: 't4', isResolved: false, authors: [CODEX] }, // not given to Claude
+  ];
+  const codexFindings = { findings: [{ thread: 't1' }, { thread: 't2' }], outdated: 1, addressed: 0, omitted: 0 };
+  assert.equal(await flows.finishRemediation(ctx, remediationInputs({ codexFindings })), 0);
+  assert.equal(ctx.outputs.values.request_review, 'true');
+  const state = stateOf(gh, 9);
+  assert.equal(state.passes, 2);
+  assert.deepEqual(state.addressed, [{ thread: 't1', sha: FIX }, { thread: 't2', sha: FIX }], 'only the findings Claude was given, bound to the pushed head');
+  assert.match(state.body, /Pushed abc1234 → 5678abc\. Automated remediation budget used: 2\/3/);
+  assert.match(state.body, /Recorded 2 Codex finding\(s\) from this pass as addressed by 5678abc\./);
+  // GitHub refuses resolveReviewThread to read-only tokens, as in production.
+  assert.ok(gh.threads[9].every((t) => !t.isResolved));
+  assert.match(state.body, /2 of these thread\(s\) stay open on GitHub: resolving a thread needs Contents: write/);
+  const attempts = gh.calls.filter((c) => c.body?.query?.includes('resolveReviewThread'));
+  assert.deepEqual(attempts.map((c) => c.body.variables.id), ['t1'], 'stops at the first refusal; never tries threads Claude was not given');
+  assert.equal(ctx.logs.filter(([, m]) => /could not resolve review thread/.test(m)).length, 0, 'no warning per thread');
+});
+
+test('remediation finish: where the token may, exactly the fixed threads are resolved on GitHub', async () => {
+  const { gh, ctx } = prWorld({ passes: 1 });
+  gh.canResolveThreads.add('bot-token');
+  gh.pulls[9].head.sha = FIX;
+  gh.threads[9] = [
+    { id: 't1', isResolved: false, authors: [CODEX] },
+    { id: 't2', isResolved: false, isOutdated: true, authors: [CODEX] },
+    { id: 't3', isResolved: false, authors: [CODEX] },
+  ];
+  await flows.finishRemediation(ctx, remediationInputs({ codexFindings: { findings: [{ thread: 't1' }] } }));
+  assert.deepEqual(gh.threads[9].map((t) => t.isResolved), [true, false, false]);
+  assert.deepEqual(stateOf(gh, 9).addressed, [{ thread: 't1', sha: FIX }]);
+  assert.doesNotMatch(stateOf(gh, 9).body, /stay open on GitHub/);
+});
+
+test('remediation finish: without the pass\'s findings list, nothing is recorded as addressed', async () => {
   const { gh, ctx } = prWorld({ passes: 1 });
   gh.pulls[9].head.sha = 'new5678';
   gh.threads[9] = [{ id: 't1', isResolved: false, authors: [CODEX] }];
-  assert.equal(await flows.finishRemediation(ctx, remediationInputs()), 0);
-  assert.equal(ctx.outputs.values.request_review, 'true');
-  assert.equal(gh.threads[9][0].isResolved, true);
-  const state = stateOf(gh, 9);
-  assert.equal(state.passes, 2);
-  assert.match(state.body, /Pushed abc1234 → new5678\. Automated remediation budget used: 2\/3/);
+  assert.equal(await flows.finishRemediation(ctx, remediationInputs({ codexFindings: null })), 0);
+  assert.deepEqual(stateOf(gh, 9).addressed, []);
+  assert.match(stateOf(gh, 9).body, /could not be listed, so none were recorded as addressed/);
+});
+
+test('remediation finish: blocked, no_change and invalid results record nothing as addressed', async () => {
+  const codexFindings = { findings: [{ thread: 't1' }] };
+  for (const [status, moves] of [['blocked', true], ['no_change', false], ['fixed', false]]) {
+    const { gh, ctx } = prWorld({ passes: 1 });
+    if (moves) gh.pulls[9].head.sha = 'new5678';
+    gh.threads[9] = [{ id: 't1', isResolved: false, authors: [CODEX] }];
+    await flows.finishRemediation(ctx, remediationInputs({ rawResult: ok(status), codexFindings }));
+    assert.deepEqual(stateOf(gh, 9).addressed, [], status);
+  }
+  const broken = prWorld({ passes: 1 });
+  broken.gh.pulls[9].head.sha = 'new5678';
+  await flows.finishRemediation(broken.ctx, remediationInputs({ validationOutcome: 'failure', codexFindings }));
+  assert.deepEqual(stateOf(broken.gh, 9).addressed, [], 'a fix that fails validation addresses nothing');
 });
 
 test('remediation finish: non-countable passes keep the budget', async () => {
@@ -564,15 +617,32 @@ test('Curious Workbench regression: inline finding reaches the prompt; fixed wit
 
 const audit = (status, findings = []) => JSON.stringify({ status, summary: `audit ${status}`, findings });
 
-test('audit: clean completes automation and resolves threads', async () => {
+test('audit: a clean audit is a judgement, so open Codex findings are neither resolved nor recorded', async () => {
   const { gh, ctx } = prWorld({ passes: 3, final: 'running' });
-  gh.threads[9] = [{ id: 't1', isResolved: false, authors: [CODEX] }];
+  gh.canResolveThreads.add('bot-token'); // even where it could, it does not
+  gh.threads[9] = [
+    { id: 't1', isResolved: false, authors: [CODEX] },
+    { id: 't2', isResolved: false, isOutdated: true, authors: [CODEX] },
+  ];
   assert.equal(await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, rawResult: audit('clean') }), 0);
   const state = stateOf(gh, 9);
   assert.equal(state.final, 'complete');
-  assert.match(state.body, /ready for human acceptance/);
-  assert.equal(gh.threads[9][0].isResolved, true);
+  assert.deepEqual(state.addressed, []);
+  assert.ok(gh.threads[9].every((t) => !t.isResolved));
+  assert.ok(!gh.calls.some((c) => c.body?.query?.includes('resolveReviewThread')));
+  assert.match(state.body, /\*\*Stage:\*\* Holistic final audit completed cleanly, but open Codex findings await a human decision; automated review is finished\./);
+  assert.match(state.body, /1 open Codex finding\(s\) were not fixed by a verified push: the final audit judged them non-actionable\. That is a judgement, not a fix, so they are not recorded as addressed\./);
+  assert.doesNotMatch(state.body, /ready for human acceptance/);
   assert.equal(ctx.outputs.values.run_fix, 'false');
+});
+
+test('audit: a clean audit with no open Codex findings is ready for human acceptance', async () => {
+  const { gh, ctx } = prWorld({ passes: 3, final: 'running' });
+  gh.threads[9] = [{ id: 't1', isResolved: true, authors: [CODEX] }];
+  assert.equal(await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, rawResult: audit('clean') }), 0);
+  const state = stateOf(gh, 9);
+  assert.match(state.body, /\*\*Stage:\*\* Holistic final audit completed cleanly; automated review is finished\./);
+  assert.match(state.body, /When CI passes, this pull request is ready for human acceptance\./);
 });
 
 test('audit: findings hand off to the consolidated fix', async () => {
@@ -603,18 +673,26 @@ test('audit: blocked and failed audits stop for a human', async () => {
 
 const finalInputs = (extra = {}) => ({ ...claudeOk, pr: 9, headSha: HEAD, auditSummary: 'two issues', rawResult: ok('fixed'), validationOutcome: 'success', ...extra });
 
-test('final fix: a verified, pushed fix completes automation without requesting another review', async () => {
+test('final fix: a verified fix completes automation without another review; Codex threads it was not given stay a human decision', async () => {
   const { gh, ctx } = prWorld({ passes: 3, final: 'running' });
-  gh.pulls[9].head.sha = 'new5678';
+  gh.pulls[9].head.sha = FIX;
   gh.threads[9] = [{ id: 't1', isResolved: false, authors: [CODEX] }];
   assert.equal(await flows.finishFinalFix(ctx, finalInputs()), 0);
   const state = stateOf(gh, 9);
   assert.equal(state.final, 'complete');
-  assert.match(state.body, /Final audit and consolidated remediation complete/);
-  assert.match(state.body, /pushed abc1234 → new5678/);
-  assert.match(state.body, /No further automated review will run/);
-  assert.equal(gh.threads[9][0].isResolved, true);
+  assert.match(state.body, /Final audit and consolidated remediation complete, but open Codex findings await a human decision/);
+  assert.match(state.body, /pushed abc1234 → 5678abc/);
+  assert.match(state.body, /1 open Codex finding\(s\) were not fixed by a verified push: the consolidated fix was given the audit's findings, not these threads/);
+  assert.match(state.body, /No further automated review will run\./);
+  assert.doesNotMatch(state.body, /ready for human acceptance/);
+  assert.deepEqual(state.addressed, []);
+  assert.equal(gh.threads[9][0].isResolved, false);
   assert.equal(reviewRequests(gh).length, 0);
+
+  const clean = prWorld({ passes: 3, final: 'running' });
+  clean.gh.pulls[9].head.sha = FIX;
+  await flows.finishFinalFix(clean.ctx, finalInputs());
+  assert.match(stateOf(clean.gh, 9).body, /Final audit and consolidated remediation complete; automated review is finished\.[\s\S]*When CI passes, this pull request is ready for human acceptance\./);
 });
 
 test('final fix: fixed without a pushed commit never declares completion', async () => {
@@ -961,4 +1039,158 @@ test('completion: /agent-fix ends the wait, so a late clean result cannot hide i
   assert.match(blocked, /Owner-requested fix is blocked; human input required/);
   assert.equal(await deliver(world, summaryComment(gh)), 'unknown');
   assert.equal(state17(gh).body, blocked);
+});
+
+// Addressed threads (GitHub refuses to let read-only tokens resolve them) ----------------------
+
+/** Curious Workbench PR #17 at the second incident: three current Codex findings, five outdated. */
+async function findingsWorld() {
+  const world = await awaitingWorld({ origin: 'remediation' });
+  const { gh, config } = world;
+  gh.addComment(17, requestBody('remediation'), 'owner');
+  const review = gh.addReview(17, CODEX, '', { commit_id: CW });
+  const codex = (id, line) => ({ id, isResolved: false, path: 'src/x.ts', line, comments: [{ author: CODEX, body: `**Finding ${id}**`, review: review.id }] });
+  const outdated = (id) => ({ id, isResolved: false, isOutdated: true, path: 'src/old.ts', comments: [{ author: CODEX, body: 'old' }] });
+  gh.threads[17] = [codex('PRRT_a', 1), codex('PRRT_b', 2), codex('PRRT_c', 3), ...['o1', 'o2', 'o3', 'o4', 'o5'].map(outdated)];
+  const plan = fakeContext(gh, { config, event: { review: { id: review.id, commit_id: CW, body: '' } } });
+  await flows.planRemediation(plan, { pr: 17 });
+  return { ...world, plan };
+}
+
+async function verifiedFix({ gh, config, plan }, fixedSha) {
+  gh.pulls[17].head.sha = fixedSha;
+  const finish = fakeContext(gh, { config });
+  const codexFindings = JSON.parse(plan.outputs.values.codex_findings);
+  assert.equal(await flows.finishRemediation(finish, { ...remediationInputs(), pr: 17, passes: plan.outputs.values.passes, countable: plan.outputs.values.countable, headSha: CW, codexFindings }), 0);
+  const finished = state17(gh);
+  await flows.reviewCycle(finish, { pr: 17, origin: 'remediation' });
+  return finished;
+}
+
+test('addressed threads: a verified fix makes the next clean review ready although GitHub kept the threads open', async () => {
+  const world = await findingsWorld();
+  const { gh } = world;
+  const fixed = 'fe'.repeat(20);
+  const finished = await verifiedFix(world, fixed);
+  assert.deepEqual(finished.addressed, ['PRRT_a', 'PRRT_b', 'PRRT_c'].map((thread) => ({ thread, sha: fixed })), 'exactly the findings given to Claude, bound to the fix');
+  assert.match(finished.body, /Recorded 3 Codex finding\(s\) from this pass as addressed by fefefef\.\n\n3 of these thread\(s\) stay open on GitHub/);
+  assert.ok(gh.threads[17].every((t) => !t.isResolved), 'GitHub refused every resolution, as in production');
+  const after = state17(gh);
+  assert.deepEqual([after.review.sha, after.review.status, after.addressed.length], [fixed, 'requested', 3]);
+
+  assert.equal(await deliver(world, gh.addComment(17, cleanResult(fixed.slice(0, 10)), CODEX), 'created'), 'clean');
+  const ready = state17(gh);
+  assert.match(ready.body, /\*\*Stage:\*\* Codex review completed with no actionable findings\./);
+  assert.match(ready.body, /3 Codex thread\(s\) fixed by verified remediation passes are still open on GitHub, because resolving needs Contents: write; resolve them when you accept\./);
+  assert.match(ready.body, /When CI passes, this pull request is ready for human acceptance\./);
+  assert.equal(ready.addressed.length, 3, 'addressed threads persist');
+});
+
+test('addressed threads: a finding Claude was never given still blocks readiness', async () => {
+  const world = await findingsWorld();
+  const { gh } = world;
+  const fixed = 'fe'.repeat(20);
+  await verifiedFix(world, fixed);
+  gh.threads[17].push({ id: 'PRRT_new', isResolved: false, path: 'src/y.ts', line: 7, comments: [{ author: CODEX, body: 'Arrived after the pass was planned' }] });
+  assert.equal(await deliver(world, gh.addComment(17, cleanResult(fixed.slice(0, 10)), CODEX), 'created'), 'findings');
+  assert.match(state17(gh).body, /but 1 earlier unresolved Codex finding\(s\) remain; human input required/);
+});
+
+test('addressed threads: the next remediation pass and /agent-fix see only findings not yet fixed', async () => {
+  const world = await findingsWorld();
+  const { gh, config } = world;
+  const fixed = 'fe'.repeat(20);
+  await verifiedFix(world, fixed);
+  const review = gh.addReview(17, CODEX, '', { commit_id: fixed });
+  gh.threads[17].push({ id: 'PRRT_new', isResolved: false, path: 'src/y.ts', line: 7, comments: [{ author: CODEX, body: '**New finding**', review: review.id }] });
+  const plan = fakeContext(gh, { config, event: { review: { id: review.id, commit_id: fixed, body: '' } } });
+  await flows.planRemediation(plan, { pr: 17 });
+  const collected = JSON.parse(plan.outputs.values.codex_findings);
+  assert.deepEqual(collected.findings.map((f) => f.thread), ['PRRT_new']);
+  assert.equal(collected.addressed, 3);
+  const prompt = fakeContext(gh, { config, event: plan.event });
+  prompt.env = { PR_NUMBER: '17', HEAD_REF: 'feature/brand', CODEX_FINDINGS: plan.outputs.values.codex_findings };
+  await run('prompt', 'remediate', prompt);
+  assert.match(prompt.outputs.values.prompt, /3 Codex thread\(s\) were fixed by earlier verified pushes that are still in the branch, and are not listed, although they are still open on GitHub\./);
+  assert.doesNotMatch(prompt.outputs.values.prompt, /Finding PRRT_a/);
+
+  const fix = fakeContext(gh, { config });
+  await flows.prepareHumanFix(fix, { pr: 17, actor: 'owner' });
+  assert.deepEqual(JSON.parse(fix.outputs.values.codex_findings).findings.map((f) => f.thread), ['PRRT_new']);
+});
+
+test('addressed threads: no_change reports only the findings not yet fixed', async () => {
+  const world = await findingsWorld();
+  const { gh, config } = world;
+  const fixed = 'fe'.repeat(20);
+  await verifiedFix(world, fixed);
+  gh.threads[17].push({ id: 'PRRT_new', isResolved: false, path: 'src/y.ts', line: 7, comments: [{ author: CODEX, body: 'new' }] });
+  const finish = fakeContext(gh, { config });
+  await flows.finishRemediation(finish, { ...remediationInputs(), pr: 17, headSha: fixed, rawResult: ok('no_change') });
+  assert.match(gh.issueComments(17).at(-1).body, /1 unresolved Codex review thread\(s\) remain/);
+});
+
+// A record is evidence only while the fix is in the branch -----------------------------------
+
+/** After a verified fix at `fixed`, move the head to `next` and request its review. */
+async function moveHead(world, fixed, next, comparison) {
+  const { gh, config } = world;
+  gh.pulls[17].head.sha = next;
+  if (comparison) gh.compare[`${fixed}...${next}`] = comparison;
+  await flows.reviewCycle(fakeContext(gh, { config }), { pr: 17, origin: 'opt-in' });
+}
+
+test('addressed threads: a merge from the base keeps the fix in the branch, so the proof holds', async () => {
+  const world = await findingsWorld();
+  const fixed = 'fe'.repeat(20);
+  const merged = 'aa'.repeat(20);
+  await verifiedFix(world, fixed);
+  await moveHead(world, fixed, merged, { status: 'ahead', ahead_by: 2, behind_by: 0 }); // A -- fix -- B -- merge-main
+  assert.equal(await deliver(world, world.gh.addComment(17, cleanResult(merged.slice(0, 10)), CODEX), 'created'), 'clean');
+  assert.ok(world.gh.calls.some((c) => c.path.startsWith(`repos/acme/widget/compare/${fixed}...${merged}`)), 'ancestry is checked on GitHub');
+});
+
+test('addressed threads: a rebase or force-push that drops the fix commit voids the proof', async () => {
+  const world = await findingsWorld();
+  const { gh, config } = world;
+  const fixed = 'fe'.repeat(20);
+  const rewritten = 'bb'.repeat(20);
+  await verifiedFix(world, fixed);
+  await moveHead(world, fixed, rewritten, { status: 'diverged', ahead_by: 1, behind_by: 1 });
+  assert.equal(await deliver(world, gh.addComment(17, cleanResult(rewritten.slice(0, 10)), CODEX), 'created'), 'findings');
+  const state = state17(gh);
+  assert.match(state.body, /but 3 earlier unresolved Codex finding\(s\) remain; human input required/);
+  assert.match(state.body, /3 finding\(s\) recorded as fixed count again, because the commit that fixed them is no longer in the branch\./);
+  assert.equal(state.addressed.length, 3, 'the records stay; they just prove nothing at this head');
+
+  // The next pass is given those findings again.
+  const review = gh.addReview(17, CODEX, '', { commit_id: rewritten });
+  const plan = fakeContext(gh, { config, event: { review: { id: review.id, commit_id: rewritten, body: '' } } });
+  await flows.planRemediation(plan, { pr: 17 });
+  const collected = JSON.parse(plan.outputs.values.codex_findings);
+  assert.deepEqual(collected.findings.map((f) => f.thread), ['PRRT_a', 'PRRT_b', 'PRRT_c']);
+  assert.equal(collected.addressed, 0);
+});
+
+test('addressed threads: a fix commit GitHub cannot place, or a failed comparison, proves nothing', async () => {
+  for (const comparison of [null /* unknown commit: 404 */, { status: 500 }, { status: 'behind', ahead_by: 0, behind_by: 1 }]) {
+    const world = await findingsWorld();
+    const fixed = 'fe'.repeat(20);
+    const next = 'cc'.repeat(20);
+    await verifiedFix(world, fixed);
+    await moveHead(world, fixed, next, comparison);
+    const label = JSON.stringify(comparison);
+    assert.equal(await deliver(world, world.gh.addComment(17, cleanResult(next.slice(0, 10)), CODEX), 'created'), 'findings', label);
+  }
+});
+
+test('addressed threads: proof for one thread never covers another', async () => {
+  const world = await findingsWorld();
+  const { gh } = world;
+  const fixed = 'fe'.repeat(20);
+  await verifiedFix(world, fixed);
+  const later = { id: 'PRRT_later', isResolved: false, path: 'src/x.ts', line: 1, comments: [{ author: CODEX, body: 'same line as PRRT_a' }] };
+  gh.threads[17].push(later);
+  assert.equal(await deliver(world, gh.addComment(17, cleanResult(fixed.slice(0, 10)), CODEX), 'created'), 'findings');
+  assert.match(state17(gh).body, /but 1 earlier unresolved Codex finding\(s\) remain/);
 });

@@ -48,7 +48,7 @@ consumer repository
                  clean ◄──────────────┼──────────────► findings
                    │                                       │
                    │                 Claude (sonnet) remediates, workflow validates,
-                   │                 resolves threads, requests re-review
+                   │                 records fixed threads, requests re-review
                    │                 … up to remediation.max_passes (default 3)
                    │                                       │
                    │                        budget spent and Codex still has findings
@@ -154,6 +154,13 @@ consumed only when a countable remediation actually pushes a branch mutation, an
 unresolved Codex inline threads, collected by the workflow, rather than relying on
 the review body. Details:
 [docs/architecture.md](docs/architecture.md#agent-results-are-verified-not-trusted).
+
+Codex threads fixed by a verified pass stay **open on GitHub**: GitHub only lets a
+token with Contents: write resolve a review thread, and agent-workflows' tokens are
+read-only by design. The status comment records each fix with its commit, so the
+finding no longer blocks "ready for human acceptance" while that commit is in the
+branch. Only a verified, validated push records a fix; an audit's verdict never
+does. Resolve the threads yourself when you accept.
 
 ## Security model (summary)
 

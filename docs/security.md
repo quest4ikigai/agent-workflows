@@ -21,7 +21,7 @@ boundaries are where they are.
 
 | Credential | Held by | Used for | Never used for |
 | --- | --- | --- | --- |
-| `GITHUB_TOKEN` (built-in) | every job; never Claude (the copy `actions/checkout` persists is removed before Claude starts) | reading the repository and config, status comments, labels, resolving review threads, checking permissions | pushing code (contents is **read-only**) |
+| `GITHUB_TOKEN` (built-in) | every job; never Claude (the copy `actions/checkout` persists is removed before Claude starts) | reading the repository and config, status comments, labels, checking permissions | pushing code or resolving review threads (contents is **read-only**) |
 | Claude GitHub App token | the `claude-code-action` step only | Claude's commits and pushes; short-lived, scoped to this repository, revoked when the step ends | — |
 | `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` | the `claude-code-action` step | model access | GitHub operations |
 | `AGENT_GITHUB_TOKEN` (PAT) | dedicated runtime steps only | opening Path A PRs (so CI runs) and posting `@codex review` (Codex ignores `github-actions[bot]`); polling review status | anything in Claude's environment; pushing code |
@@ -158,6 +158,13 @@ it.
   branch), so a `fixed` result that pushed nothing cannot consume budget, request
   a review or complete automation, and Claude's `no_change` never resolves Codex
   threads. See [architecture.md](architecture.md#agent-results-are-verified-not-trusted).
+- Codex threads are recorded as addressed only by the workflow, only after a
+  verified push that passed validation, and only for the findings it collected
+  and gave Claude, bound to the pushed commit. A judgement (the final audit,
+  Claude's `no_change`) never records anything, and a record stops counting once
+  a rebase or force-push drops its commit from the branch. The workflow does not
+  resolve threads on GitHub: that needs Contents: write, which no agent-workflows
+  token is given, so the human resolves them.
 - A Codex completion signal can only move the review being awaited from
   `requested` to its result. It never resets the budget, never changes the final
   audit, and never turns a known findings result clean.

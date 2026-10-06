@@ -324,6 +324,7 @@ jobs:
           PASSES: ${{ steps.plan.outputs.passes }}
           COUNTABLE: ${{ steps.plan.outputs.countable }}
           HEAD_SHA: ${{ steps.plan.outputs.head_sha }}
+          CODEX_FINDINGS: ${{ steps.plan.outputs.codex_findings }}
           CLAUDE_OUTCOME: ${{ steps.claude.outcome }}
           CLAUDE_CONCLUSION: ${{ steps.claude.outputs.conclusion }}
           RAW_RESULT: ${{ steps.claude.outputs.structured_output }}

@@ -11,7 +11,7 @@ import {
   parseCompletionSignal,
   parseReviewSummary,
   requestCodexReview,
-  resolveCodexThreads,
+  resolveReviewThreads,
   waitForCodex,
 } from '../lib/runtime/codex.mjs';
 import { CODEX, DRIFT_FINDING, FakeGitHub, cleanResult, codexSummary, codexThreads, user } from './helpers.mjs';
@@ -109,28 +109,42 @@ test('times out as pending and emits heartbeats', async () => {
   assert.match(beats[0], /Codex review still running/);
 });
 
-test('resolves only unresolved threads Codex took part in', async () => {
+test('only the given threads are resolved, where the token may', async () => {
   const gh = setup();
+  gh.canResolveThreads.add('bot-token');
   gh.threads[7] = [
-    { id: 't1', isResolved: false, authors: [CODEX, 'owner'] },
-    { id: 't2', isResolved: false, authors: ['human-reviewer'] },
-    { id: 't3', isResolved: true, authors: [CODEX] },
-    { id: 't4', isResolved: false, authors: ['chatgpt-codex-connector-x'] },
-    { id: 't5', isResolved: false, authors: ['chatgpt-codex-connector'] }, // a person with the bot's bare login
-    { id: 't6', isResolved: false, comments: [{ author: { __typename: 'User', login: 'chatgpt-codex-connector' } }] },
+    { id: 't1', isResolved: false, authors: [CODEX] },
+    { id: 't2', isResolved: false, authors: [CODEX] },
+    { id: 't3', isResolved: false, isOutdated: true, authors: [CODEX] },
   ];
   const logs = [];
-  const r = await resolveCodexThreads(gh.client(), repo, 7, (m) => logs.push(m));
+  const r = await resolveReviewThreads(gh.client(), ['t1'], (m) => logs.push(m));
   assert.deepEqual(r, { resolved: 1, failed: 0 });
-  assert.deepEqual(gh.threads[7].map((t) => t.isResolved), [true, false, true, false, false, false], 'look-alikes cannot get their threads resolved');
+  assert.deepEqual(gh.threads[7].map((t) => t.isResolved), [true, false, false], 'nothing beyond the threads a verified pass fixed');
+  assert.deepEqual(logs, ['Resolved 1/1 Codex review thread(s).']);
+  assert.deepEqual(await resolveReviewThreads(gh.client(), [], (m) => logs.push(m)), { resolved: 0, failed: 0 });
+  assert.equal(logs.length, 1, 'nothing to say when nothing was fixed');
 });
 
-test('thread resolution failures are reported, never thrown', async () => {
-  const client = { graphql: async () => { throw new Error('forbidden'); } };
+test('GitHub refusing thread resolution (Contents: write required) stops after one attempt', async () => {
+  const gh = setup();
+  gh.threads[7] = ['t1', 't2', 't3'].map((id) => ({ id, isResolved: false, authors: [CODEX] }));
   const logs = [];
-  const r = await resolveCodexThreads(client, repo, 7, (m) => logs.push(m));
-  assert.equal(r.resolved, 0);
-  assert.match(logs[0], /could not list review threads/);
+  const r = await resolveReviewThreads(gh.client(), ['t1', 't2', 't3'], (m) => logs.push(m));
+  assert.deepEqual(r, { resolved: 0, failed: 3, refused: true });
+  assert.equal(gh.calls.filter((c) => c.body?.query?.includes('resolveReviewThread')).length, 1);
+  assert.deepEqual(logs, [
+    "3 Codex review thread(s) left open: GitHub requires Contents: write to resolve review threads, and agent-workflows' tokens are read-only (GraphQL: Resource not accessible by integration).",
+  ]);
+  assert.ok(gh.threads[7].every((t) => !t.isResolved));
+});
+
+test('other thread resolution failures are reported per thread, never thrown', async () => {
+  const client = { graphql: async () => { throw new Error('network down'); } };
+  const logs = [];
+  const r = await resolveReviewThreads(client, ['t1', 't2'], (m) => logs.push(m));
+  assert.deepEqual(r, { resolved: 0, failed: 2 });
+  assert.match(logs[0], /could not resolve review thread t1: network down/);
 });
 
 test('current Codex findings: unresolved, Codex-opened, not outdated; path, lines and text preserved', async () => {
