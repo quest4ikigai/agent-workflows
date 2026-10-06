@@ -45,8 +45,9 @@ the workflow.
 - The status comment records the awaited review in hidden markers (`review_sha`
   with the full SHA, status, origin, request time and request comment ID) and
   shows its commit, request time and result. State written by 1.0.0 still parses.
-- A new `Record Codex completion` job (Contents read, Issues write, Pull requests
-  read; no Claude, no PAT) accepts Codex's summary edit or clean-result comment
+- A new `Record Codex completion` job (Contents read, Issues and Pull requests
+  write, like the other jobs that update the status comment; no Claude, no PAT)
+  accepts Codex's summary edit or clean-result comment
   only from the Codex bot account, only for the recorded commit, and only while it
   is still the PR head. Unresolved Codex threads or a Codex pull request review of
   that commit keep the PR from being reported ready.

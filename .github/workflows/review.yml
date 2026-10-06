@@ -130,10 +130,12 @@ jobs:
     concurrency:
       group: agent-pr-${{ needs.gate.outputs.pr_number }}
       cancel-in-progress: false
+    # Editing the status comment, an issue comment on a pull request, needs
+    # pull-requests: write; issues: write alone is refused (403).
     permissions:
       contents: read
       issues: write
-      pull-requests: read
+      pull-requests: write
     steps:
       - name: Fetch agent-workflows tooling
         shell: bash

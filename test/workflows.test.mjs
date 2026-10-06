@@ -316,9 +316,46 @@ test('Codex completion signals are recorded by a small locked job without Claude
   assert.ok(job, 'review.yml has a complete job');
   assert.match(job, /\n    needs: gate\n    if: needs\.gate\.outputs\.action == 'complete'\n/);
   assert.match(job, /\n    concurrency:\n      group: agent-pr-\$\{\{ needs\.gate\.outputs\.pr_number \}\}\n      cancel-in-progress: false\n/);
-  assert.match(job, /\n    permissions:\n      contents: read\n      issues: write\n      pull-requests: read\n    steps:/);
+  assert.match(job, /\n    permissions:\n      contents: read\n      issues: write\n      pull-requests: write\n    steps:/);
   assert.doesNotMatch(job, /anthropics\/claude-code-action|actions\/checkout|secrets\.|id-token|AGENT_GITHUB_TOKEN/);
   const all = jobSteps(job);
   assert.deepEqual(all.map((s) => s.name), ['Fetch agent-workflows tooling', 'Record Codex completion']);
   assert.match(all[1].text, /node "\$AW" record-codex-completion\n/);
+});
+
+// Runtime commands that create or edit comments on pull requests (the review
+// status comment, explanations, Codex requests). GitHub refuses those edits
+// with 403 unless the job's GITHUB_TOKEN has pull-requests: write; issues:
+// write alone is not enough, and the fake GitHub in these tests cannot tell.
+const WRITES_PR_COMMENTS = [
+  'gate review',
+  'gate human-fix',
+  'finish-implement',
+  'review-cycle',
+  'start-review',
+  'plan-remediation',
+  'record-codex-completion',
+  'finish-remediation',
+  'finish-audit',
+  'finish-final-fix',
+  'prepare-human-fix',
+  'finish-human-fix',
+];
+
+test('every job that writes pull request comments can: issues and pull-requests write', () => {
+  const seen = new Set();
+  for (const f of REUSABLE) {
+    for (const job of jobs(read(f))) {
+      const name = job.match(/^  ([a-z_-]+):/)[1];
+      const perms = (job.match(/\n    permissions:\n((?: {6}.+\n)+)/) || [])[1] || '';
+      for (const m of job.matchAll(/node "\$AW" ([a-z-]+)(?: ([a-z-]+))?\n/g)) {
+        const key = m[2] && WRITES_PR_COMMENTS.includes(`${m[1]} ${m[2]}`) ? `${m[1]} ${m[2]}` : m[1];
+        if (!WRITES_PR_COMMENTS.includes(key)) continue;
+        seen.add(key);
+        assert.match(perms, /^ {6}pull-requests: write$/m, `${f}/${name}: ${key} edits PR comments`);
+        assert.match(perms, /^ {6}issues: write$/m, `${f}/${name}: ${key}`);
+      }
+    }
+  }
+  assert.deepEqual([...seen].sort(), [...WRITES_PR_COMMENTS].sort(), 'every listed command is used by a workflow');
 });

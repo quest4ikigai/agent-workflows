@@ -80,7 +80,7 @@ If Claude's push fails with a 403, do not widen either token. See the
 | Implement | read | write | write | read | write² |
 | Request Codex review (Path A) | read | write | write | — | — |
 | Start review cycle | read | write | write | — | — |
-| Record Codex completion | read | write | read | — | — |
+| Record Codex completion | read | write | write | — | — |
 | Remediate / escalate | read | write | write | read | write² |
 | Apply feedback (`/agent-fix`) | read | write | write | read | write² |
 
