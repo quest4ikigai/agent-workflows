@@ -151,7 +151,11 @@ gh label create agent-review --color 0e8a16 --description "PR opted in to Codex 
 ```
 
 Protect `base_branch` (require pull requests). The automation never pushes there,
-but branch protection makes that a guarantee rather than a promise.
+but branch protection makes that a guarantee rather than a promise. Also enable
+**Require branches to be up to date before merging**: readiness covers the base
+branch tip Codex reviewed against, and GitHub sends PRs no event when the base
+advances, so this rule is what turns a newer base into a branch update (a push,
+which withdraws readiness until Codex reviews the result).
 
 ## 7. Commit to the default branch
 
@@ -243,6 +247,7 @@ secrets and labels. Open PRs keep their status comments; nothing else remains.
 | Codex never responds | PAT owner is not connected to Codex, Codex review is not enabled for the repository, or the request is still queued; the status says "still running beyond the monitor window" |
 | Status says "Invalid remediation result" (or invalid `/agent-fix` / final-fix result) | Claude's status contradicted the branch, for example `fixed` with no pushed commit. Nothing was counted and no review was requested. Read Claude's summary in the PR comment, then fix the branch yourself or with `/agent-fix <instructions>`, or accept the finding as is |
 | Codex threads stay open after automated fixes | Expected. GitHub only lets tokens with Contents: write resolve review threads, and agent-workflows keeps its tokens read-only. The status comment records each verified fix with its commit, so those findings do not block readiness while the commit is in the branch; resolve the threads when you accept. Do not widen token permissions for this |
+| Status says the base branch moved | Readiness covers the base tip Codex reviewed against. Update the branch from its base, or comment `/agent-review` to have Codex review it against the current base |
 | Status says "not ready" right after a push | Expected: readiness covers only the commit Codex reviewed, and any push (including a merge from the base branch) withdraws it. Comment `/agent-review` to have Codex review the new head |
 | Status still says ready after a workflow pushed to the PR | GitHub starts no workflows for pushes made with a workflow's `GITHUB_TOKEN`, so the push could not withdraw readiness. Compare the commit in "Ready for human acceptance at" with the PR head, and comment `/agent-review` |
 | Fixed findings block readiness again after a rebase or force-push | The commits that fixed them are no longer in the branch, so the record proves nothing. Resolve the threads yourself if the fix survived the rewrite, or let remediation handle them again |

@@ -243,8 +243,8 @@ const REQUIRED_ENV = {
   'record-codex-completion': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER'],
   'record-head-change': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER'],
   'finish-remediation': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'PASSES', 'COUNTABLE', 'HEAD_SHA', 'CODEX_FINDINGS', ...CLAUDE, ...VALIDATION],
-  'finish-audit': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', ...CLAUDE],
-  'finish-final-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', 'AUDIT_SUMMARY', ...CLAUDE, ...VALIDATION],
+  'finish-audit': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', 'BASE_SHA', ...CLAUDE],
+  'finish-final-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', 'BASE_SHA', 'AUDIT_SUMMARY', ...CLAUDE, ...VALIDATION],
   'prepare-human-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'ACTOR'],
   'finish-human-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', 'PROCEED', 'SETUP_OUTCOME', ...CLAUDE, ...VALIDATION],
   'remove-checkout-credentials': [],
@@ -361,4 +361,12 @@ test('every job that writes pull request comments can: issues and pull-requests 
     }
   }
   assert.deepEqual([...seen].sort(), [...WRITES_PR_COMMENTS].sort(), 'every listed command is used by a workflow');
+});
+
+test('the final audit and fix are checked against the base tip recorded when escalation started', () => {
+  const all = jobSteps(jobs(read('review.yml')).find((j) => j.startsWith('  remediate:')));
+  for (const name of ['Finish audit', 'Finish consolidated fix']) {
+    const step = all.find((s) => s.name === name);
+    assert.match(step.text, /\n {10}BASE_SHA: \$\{\{ steps\.plan\.outputs\.base_sha \}\}\n/, name);
+  }
 });

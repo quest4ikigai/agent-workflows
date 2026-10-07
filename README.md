@@ -156,9 +156,12 @@ unresolved Codex inline threads, collected by the workflow, rather than relying 
 the review body. Details:
 [docs/architecture.md](docs/architecture.md#agent-results-are-verified-not-trusted).
 
-"Ready for human acceptance" covers one commit. Any later push, including a merge
-from the base branch, withdraws it until a Codex review of the new head (comment
-`/agent-review`) completes cleanly.
+"Ready for human acceptance" covers one head commit on one base branch tip. Any
+later push, including a merge from the base branch, withdraws it until a Codex
+review of the new head (comment `/agent-review`) completes cleanly, and so does a
+newer base tip once the workflow next checks the PR. Enable "Require branches to
+be up to date before merging" on the base branch to enforce the base at merge
+time.
 
 Codex threads fixed by a verified pass stay **open on GitHub**: GitHub only lets a
 token with Contents: write resolve a review thread, and agent-workflows' tokens are

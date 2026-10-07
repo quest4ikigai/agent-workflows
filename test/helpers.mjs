@@ -78,6 +78,7 @@ export function defaultConfig(overrides = '', repo = { defaultBranch: 'main', ow
 // Fake GitHub ---------------------------------------------------------------------------
 
 export const BOT = 'github-actions[bot]';
+export const BASE_TIP = 'ba5e'.repeat(10); // the default branch's tip in FakeGitHub
 export const CODEX = 'chatgpt-codex-connector[bot]';
 
 /** A REST user object; "[bot]" logins are app bot accounts, as on GitHub. */
@@ -101,7 +102,7 @@ export class FakeGitHub {
     this.reactions = {}; // commentId -> [reaction]
     this.events = {}; // number -> [event]
     this.labels = new Set(['agent-build']);
-    this.branches = { main: { protected: true } };
+    this.branches = { main: { protected: true, sha: BASE_TIP } }; // name -> { protected, sha (the tip) }
     this.compare = {}; // "base...head" -> { ahead_by }
     // pr -> [{ id, isResolved, isOutdated?, path?, line?, startLine?, authors } or { …, comments: [{ author, body, review? }] }]
     this.threads = {};
@@ -131,7 +132,8 @@ export class FakeGitHub {
       merged: false,
       labels: [],
       user: { login: 'owner' },
-      base: { ref: this.defaultBranch },
+      // base.sha is GitHub's snapshot from when the PR was opened; it does not follow the branch.
+      base: { ref: this.defaultBranch, sha: this.branches[this.defaultBranch]?.sha ?? null },
       ...pr,
       head: { repo: { full_name: this.repo }, sha: 'aaaaaaa111111111111111111111111111111111', ...pr.head },
     };
@@ -211,7 +213,7 @@ export class FakeGitHub {
     }
     if ((m = rest.match(/^branches\/(.+)$/))) {
       const b = this.branches[decodeURIComponent(m[1])];
-      return b ? { data: { name: m[1], protected: b.protected } } : notFound;
+      return b ? { data: { name: m[1], protected: b.protected, commit: { sha: b.sha ?? null } } } : notFound;
     }
     if ((m = rest.match(/^compare\/(.+)$/))) {
       const c = this.compare[decodeURIComponent(m[1])];

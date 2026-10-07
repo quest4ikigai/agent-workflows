@@ -12,7 +12,7 @@ import {
   parseCommand,
 } from '../lib/runtime/gate.mjs';
 import { renderState } from '../lib/runtime/state.mjs';
-import { BOT, CODEX, FakeGitHub, cleanResult, codexSummary, defaultConfig, user } from './helpers.mjs';
+import { BASE_TIP, BOT, CODEX, FakeGitHub, cleanResult, codexSummary, defaultConfig, user } from './helpers.mjs';
 
 const repo = { owner: 'acme', name: 'widget', full: 'acme/widget' };
 
@@ -372,8 +372,8 @@ test('push: only a push that invalidates readiness or the awaited review starts 
   const review = (status, sha = SHA) => ({ review: { sha, status, origin: 'remediation', requestedAt: null, requestId: null, completedAt: null } });
   const NEW = 'b'.repeat(40);
   const cases = [
-    [{ readySha: SHA, ...review('clean') }, NEW, 'head-moved', /withdraws readiness/],
-    [{ readySha: SHA, ...review('clean') }, SHA, 'none', /invalidates nothing/],
+    [{ readySha: SHA, readyBaseSha: BASE_TIP, ...review('clean') }, NEW, 'head-moved', /withdraws readiness/],
+    [{ readySha: SHA, readyBaseSha: BASE_TIP, ...review('clean') }, SHA, 'none', /invalidates nothing/],
     [review('requested'), NEW, 'head-moved', /outdates the awaited Codex review/],
     [review('requested', NEW), NEW, 'none', /invalidates nothing/],
     [review('findings'), NEW, 'none', /invalidates nothing/], // Claude pushing during remediation
@@ -394,7 +394,7 @@ test('push: only a push that invalidates readiness or the awaited review starts 
 
 test('push: each event is mapped by its own PR number; main, unrelated PRs and forks start nothing', async () => {
   const NEW = 'b'.repeat(40);
-  const ready = { readySha: SHA, review: { sha: SHA, status: 'clean', origin: 'opt-in', requestedAt: null, requestId: null, completedAt: null } };
+  const ready = { readySha: SHA, readyBaseSha: BASE_TIP, review: { sha: SHA, status: 'clean', origin: 'opt-in', requestedAt: null, requestId: null, completedAt: null } };
   const gh = pushWorld(ready);
   // PR 11 shares PR 10's head branch (another base); GitHub sends one event per PR.
   gh.addPull({ number: 11, head: { ref: 'human/feature' }, base: { ref: 'release' } });
@@ -414,4 +414,14 @@ test('push: each event is mapped by its own PR number; main, unrelated PRs and f
   gh.addPull({ number: 13, head: { ref: 'other' } });
   assert.match((await gateReview({ client, repo, config: cfg(), ...push(NEW, 13) })).reason, /does not carry the agent-review label/);
   assert.ok(!gh.calls.some((c) => c.method !== 'GET'), 'the gate writes nothing');
+});
+
+test('push: the gate compares the base branch tip too, and only the head when the tip is unreadable', async () => {
+  const ready = { readySha: SHA, readyBaseSha: BASE_TIP, review: { sha: SHA, status: 'clean', origin: 'opt-in', requestedAt: null, requestId: null, completedAt: null } };
+  const gh = pushWorld(ready);
+  gh.branches.main.sha = 'f'.repeat(40);
+  const d = await gateReview({ client: gh.client(), repo, config: cfg(), ...push(SHA) });
+  assert.deepEqual([d.action, d.reason], ['head-moved', `push of ${SHA.slice(0, 7)} withdraws readiness`]);
+  delete gh.branches.main;
+  assert.equal((await gateReview({ client: gh.client(), repo, config: cfg(), ...push(SHA) })).action, 'none');
 });

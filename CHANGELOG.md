@@ -109,6 +109,15 @@ resolution had never worked.
   push that lands meanwhile is not lost to the gate's unlocked pre-filter. Pushes
   made with another workflow's `GITHUB_TOKEN` start no workflows (a GitHub rule)
   and so cannot withdraw readiness.
+- Readiness is also bound to the base branch tip (`review_base_sha` with each
+  Codex request, `ready_base_sha` with the claim, the tip at the start of
+  escalation for the final audit and fix), read from `GET branches/{base}`
+  because the PR's `base.sha` is a snapshot that does not follow the branch. A
+  review is not clean, and escalation does not establish readiness, if the tip
+  moved meanwhile; every locked check of a claim withdraws it for a newer tip. A
+  base push sends PRs no event and is not scanned for, so it is noticed at the
+  next check; "Require branches to be up to date before merging" enforces it at
+  merge time.
 - Only the threads a verified pass fixed are resolved on GitHub, never all open
   Codex threads; the attempt stops at the first refusal with one log line, and the
   status says how many stay open for the human. No permissions change.

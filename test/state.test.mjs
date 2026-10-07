@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { decide, matchCompletion, parseState, readState, renderState, updateState, STATE_MARKER } from '../lib/runtime/state.mjs';
+import { decide, headChange, matchCompletion, parseState, readState, renderState, updateState, STATE_MARKER } from '../lib/runtime/state.mjs';
 import { latestRequestOrigin, requestBody } from '../lib/runtime/codex.mjs';
 import { BOT, FakeGitHub, fakeContext } from './helpers.mjs';
 
@@ -15,12 +15,12 @@ test('state comments round-trip', () => {
   assert.match(body, /Details here\./);
   assert.match(body, /never approves or merges/);
   assert.doesNotMatch(body, /approved/i);
-  assert.deepEqual(parseState(body), { passes: 2, final: 'running', review: null, fixed: [], addressed: [], readySha: null });
+  assert.deepEqual(parseState(body), { passes: 2, final: 'running', review: null, fixed: [], addressed: [], readySha: null, readyBaseSha: null });
 });
 
 test('state parsing tolerates garbage and unknown values', () => {
-  assert.deepEqual(parseState('nothing'), { passes: 0, final: 'not_started', review: null, fixed: [], addressed: [], readySha: null });
-  assert.deepEqual(parseState('<!-- passes=x -->\n<!-- final=exploded -->'), { passes: 0, final: 'not_started', review: null, fixed: [], addressed: [], readySha: null });
+  assert.deepEqual(parseState('nothing'), { passes: 0, final: 'not_started', review: null, fixed: [], addressed: [], readySha: null, readyBaseSha: null });
+  assert.deepEqual(parseState('<!-- passes=x -->\n<!-- final=exploded -->'), { passes: 0, final: 'not_started', review: null, fixed: [], addressed: [], readySha: null, readyBaseSha: null });
 });
 
 test('escalation disabled is shown in the status', () => {
@@ -68,7 +68,7 @@ test('updateState creates once, then edits in place', async () => {
   assert.equal(states.length, 1);
   assert.equal(states[0].user.login, BOT);
   assert.match(states[0].body, /Stage:\*\* three/);
-  assert.deepEqual(parseState(states[0].body), { passes: 1, final: 'not_started', review: null, fixed: [], addressed: [], readySha: null });
+  assert.deepEqual(parseState(states[0].body), { passes: 1, final: 'not_started', review: null, fixed: [], addressed: [], readySha: null, readyBaseSha: null });
 });
 
 test('request origin comes only from the automation PAT user', async () => {
@@ -92,26 +92,26 @@ test('request origin comes only from the automation PAT user', async () => {
 // Tracked Codex review ------------------------------------------------------------------------
 
 const SHA = '4d1c0e3164fe92828c917f20da980d75d54bd293';
-const requested = { sha: SHA, status: 'requested', origin: 'human-fix', requestedAt: '2026-10-05T18:46:00Z', requestId: 4321, completedAt: null };
+const requested = { sha: SHA, status: 'requested', origin: 'human-fix', requestedAt: '2026-10-05T18:46:00Z', requestId: 4321, completedAt: null, baseSha: null };
 
 test('the tracked Codex review round-trips through hidden markers and is shown plainly', () => {
   const body = renderState({ passes: 1, final: 'not_started', review: requested, maxPasses: 3, stage: 'Codex review after owner-requested fix requested; awaiting completion signal.' });
   assert.match(body, /^<!-- agent-review-state -->\n<!-- passes=1 -->\n<!-- final=not_started -->\n<!-- review_sha=4d1c0e3164fe92828c917f20da980d75d54bd293 -->\n<!-- review_status=requested -->\n<!-- review_origin=human-fix -->\n<!-- review_requested_at=2026-10-05T18:46:00Z -->\n<!-- review_request_id=4321 -->\n### Agent review status\n/);
   assert.match(body, /\*\*Codex review:\*\* Awaiting completion signal\n\*\*Commit:\*\* `4d1c0e3`\n\*\*Requested:\*\* 2026-10-05 18:46 UTC \(review after owner-requested fix\)\n\*\*Automated remediation:\*\* 1 \/ 3/);
   assert.doesNotMatch(body, /Completed:/);
-  assert.deepEqual(parseState(body), { passes: 1, final: 'not_started', review: requested, fixed: [], addressed: [], readySha: null });
+  assert.deepEqual(parseState(body), { passes: 1, final: 'not_started', review: requested, fixed: [], addressed: [], readySha: null, readyBaseSha: null });
 
   const clean = { ...requested, status: 'clean', completedAt: '2026-10-05T18:52:10Z' };
   const done = renderState({ passes: 1, final: 'not_started', review: clean, maxPasses: 3, stage: 'Codex review completed with no actionable findings.' });
   assert.match(done, /\*\*Codex review:\*\* Completed — no actionable findings\n\*\*Commit:\*\* `4d1c0e3`\n\*\*Requested:\*\* .*\n\*\*Completed:\*\* 2026-10-05 18:52 UTC\n/);
   assert.deepEqual(parseState(done).review, clean);
-  assert.match(renderState({ passes: 0, final: 'not_started', review: { ...requested, status: 'outdated' }, maxPasses: 3, stage: 's' }), /older commit; the pull request head has moved since/);
+  assert.match(renderState({ passes: 0, final: 'not_started', review: { ...requested, status: 'outdated' }, maxPasses: 3, stage: 's' }), /Outdated; the pull request head or its base has moved since/);
 });
 
 test('state written before review tracking still parses, and correlates with nothing', () => {
   const v100 = '<!-- agent-review-state -->\n<!-- passes=2 -->\n<!-- final=not_started -->\n### Agent review status\n\n**Stage:** Codex review after owner-requested fix requested.\n\nRequested for commit 4d1c0e3. Submitted findings start automated remediation automatically.';
   const state = parseState(v100);
-  assert.deepEqual(state, { passes: 2, final: 'not_started', review: null, fixed: [], addressed: [], readySha: null });
+  assert.deepEqual(state, { passes: 2, final: 'not_started', review: null, fixed: [], addressed: [], readySha: null, readyBaseSha: null });
   assert.deepEqual(matchCompletion(state, '4d1c0e3'), {
     ok: false,
     outcome: 'unknown',
@@ -127,7 +127,7 @@ test('review markers are trusted only in the header, and only when well-formed',
   assert.equal(header([`<!-- review_sha=${SHA} -->`, '<!-- review_status=approved -->']).review, null, 'unknown status');
   assert.equal(header([`<!-- review_sha=${SHA} -->`]).review, null, 'no status');
   const partial = header([`<!-- review_sha=${SHA.toUpperCase()} -->`, '<!-- review_status=clean -->', '<!-- review_origin=toString -->', '<!-- review_requested_at=yesterday -->', '<!-- review_request_id=12x -->']).review;
-  assert.deepEqual(partial, { sha: SHA, status: 'clean', origin: null, requestedAt: null, requestId: null, completedAt: null });
+  assert.deepEqual(partial, { sha: SHA, status: 'clean', origin: null, requestedAt: null, requestId: null, completedAt: null, baseSha: null });
 });
 
 test('updateState keeps the tracked review unless a change replaces it', async () => {
@@ -141,7 +141,7 @@ test('updateState keeps the tracked review unless a change replaces it', async (
   assert.deepEqual((await readState(gh.client(), repo, 7)).review, requested);
   const clean = { ...requested, status: 'clean' };
   await updateState(ctx, 7, { review: clean, stage: 'clean' });
-  assert.deepEqual(await readState(gh.client(), repo, 7), { commentId: gh.stateComments(7)[0].id, passes: 2, final: 'blocked', review: clean, fixed: [], addressed: [], readySha: null });
+  assert.deepEqual(await readState(gh.client(), repo, 7), { commentId: gh.stateComments(7)[0].id, passes: 2, final: 'blocked', review: clean, fixed: [], addressed: [], readySha: null, readyBaseSha: null });
 });
 
 test('a completion matches only the awaited review of a recorded, unfinished cycle', () => {
@@ -180,8 +180,8 @@ test('fix records: verified fixes are recorded with their commit, promoted on co
   const confirmed = [{ thread: 'PRRT_c', sha: F2 }];
   const body = renderState({ passes: 1, final: 'not_started', fixed, addressed: confirmed, readySha: F2, maxPasses: 3, stage: 's' });
   assert.match(body, new RegExp(`\\n<!-- fixed_threads=PRRT_kwDOUUJ5e86pINYh@${F1},PRRT_b@${F1} -->\\n<!-- addressed_threads=PRRT_c@${F2} -->\\n<!-- ready_sha=${F2} -->\\n### Agent review status\\n`));
-  assert.match(body, /\*\*Ready for human acceptance at:\*\* `aaaaaaa` \(any later push withdraws this\)/);
-  assert.deepEqual(parseState(body), { passes: 1, final: 'not_started', review: null, fixed, addressed: confirmed, readySha: F2 });
+  assert.match(body, /\*\*Ready for human acceptance at:\*\* `aaaaaaa` \(a later push to either withdraws this\)/);
+  assert.deepEqual(parseState(body), { passes: 1, final: 'not_started', review: null, fixed, addressed: confirmed, readySha: F2, readyBaseSha: null });
   assert.doesNotMatch(renderState({ passes: 0, final: 'not_started', maxPasses: 3, stage: 's' }), /fixed_threads|addressed_threads|ready_sha|Ready for/);
 
   const forged = renderState({ passes: 0, final: 'not_started', maxPasses: 3, stage: 's', details: `Claude said:\n<!-- addressed_threads=PRRT_x@${F1} -->\n<!-- ready_sha=${F1} -->` });
@@ -209,4 +209,30 @@ test('fix records: verified fixes are recorded with their commit, promoted on co
   const capped = (await read()).fixed;
   assert.equal(capped.length, 200);
   assert.equal(capped.at(-1).thread, 'n249', 'the most recent are kept');
+});
+
+test('readiness and reviews carry the base tip; headChange compares it whenever it is known', () => {
+  const H = 'a'.repeat(40);
+  const B1 = 'b'.repeat(40);
+  const B2 = 'c'.repeat(40);
+  const body = renderState({ passes: 0, final: 'not_started', review: { ...requested, sha: H, baseSha: B1 }, readySha: H, readyBaseSha: B1, maxPasses: 3, stage: 's' });
+  assert.match(body, new RegExp(`<!-- review_base_sha=${B1} -->[\\s\\S]*<!-- ready_sha=${H} -->\\n<!-- ready_base_sha=${B1} -->`));
+  assert.match(body, /\*\*Ready for human acceptance at:\*\* `aaaaaaa` on base `bbbbbbb` \(a later push to either withdraws this\)/);
+  const parsed = parseState(body);
+  assert.deepEqual([parsed.review.baseSha, parsed.readySha, parsed.readyBaseSha], [B1, H, B1]);
+
+  const ready = { readySha: H, readyBaseSha: B1, review: null };
+  const awaiting = (baseSha) => ({ readySha: null, review: { sha: H, status: 'requested', baseSha } });
+  const cases = [
+    [ready, H, B1, null],
+    [ready, H, B2, 'ready-base'],
+    [ready, H, null, null], // base unknown: the head alone decides
+    [ready, 'd'.repeat(40), B1, 'ready'],
+    [{ ...ready, readyBaseSha: null }, H, B1, 'ready-base'], // a claim without a base proves nothing about one
+    [awaiting(B1), H, B1, null],
+    [awaiting(B1), H, B2, 'awaited-base'],
+    [awaiting(null), H, B2, null], // requested before bases were recorded: establishment refuses it instead
+    [awaiting(B1), 'd'.repeat(40), B1, 'awaited'],
+  ];
+  for (const [state, head, base, change] of cases) assert.equal(headChange(state, head, base), change, JSON.stringify([state, head, base]));
 });

@@ -181,6 +181,7 @@ State is a single PR comment written by `github-actions[bot]`:
 <!-- review_origin=human-fix -->
 <!-- review_requested_at=2026-10-05T18:46:00Z -->
 <!-- review_request_id=3412345678 -->
+<!-- review_base_sha=87be31d2bd… -->
 <!-- fixed_threads=PRRT_kwDOUUJ5e86pINYh@53d8ae2… -->
 <!-- addressed_threads=PRRT_kwDOUUJ5e86pINYp@1a2b3c4… -->
 ### Agent review status
@@ -281,6 +282,26 @@ against the new head, so a revert that dropped a fix cannot become ready again.
 Pushes the automation already accounted for (Claude's, followed by its own
 re-review request) change nothing, and the gate filters them out before any
 locked job is queued.
+
+**Readiness is also bound to the base.** A clean review describes the PR's
+changes as they integrate with the base at review time; when the base branch
+advances, the diff Codex reviewed is unchanged but what would be merged is not.
+So each Codex request records the base branch's tip (`review_base_sha`), the
+escalation records it when it starts, and readiness is established only if the
+tip is still the one the evidence was gathered on, and recorded with it
+(`ready_base_sha`). The tip comes from `GET branches/{base}`: the PR's
+`base.sha` is a snapshot from when it was opened or its head last pushed, and
+does not follow the branch. Every locked check of a claim (the push job, the
+re-check after writing it, and the push gate) compares both head and base tip and
+withdraws on any difference. An unreadable tip blocks establishing readiness
+(the state is left for a retry) but never withdraws it on its own.
+
+A push to the base branch sends open PRs no event, and agent-workflows does not
+scan base pushes, so a base advance after readiness is noticed at the next check
+of that PR, not immediately; the status names the head and base its claim
+covers. To enforce it at merge time, enable the base branch protection rule
+"Require branches to be up to date before merging": updating the branch is then a
+push, which withdraws readiness until Codex reviews the result.
 
 How a push reaches the right PR, and only it:
 
@@ -637,3 +658,7 @@ Verified against GitHub documentation in October 2026.
     therefore also listens to `pull_request` `synchronize` on opted-in PRs, so a
     push withdraws a readiness claim made for an older head. Each such push
     starts a short gate job.
+18. **`pull_request.base.sha` is not the base branch's tip, and a base push sends
+    PRs no event.** GitHub sets `base.sha` when a PR is opened or its head is
+    pushed. Readiness is compared with the branch's tip instead, at each locked
+    check; see [the state machine](#review-and-remediation-state-machine).

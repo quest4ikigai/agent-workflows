@@ -8,6 +8,7 @@ import { run } from '../lib/runtime/main.mjs';
 import { parseState, renderState, updateState } from '../lib/runtime/state.mjs';
 import { requestBody } from '../lib/runtime/codex.mjs';
 import {
+  BASE_TIP,
   BOT,
   CODEX,
   DRIFT_FINDING,
@@ -273,7 +274,7 @@ test('review cycle: wait_minutes 0 records the exact request and exits without w
   assert.equal(ctx.outputs.values.result, 'requested');
   const request = gh.issueComments(9).find((c) => c.body.startsWith('@codex review'));
   const state = stateOf(gh, 9);
-  assert.deepEqual(state.review, { sha: HEAD, status: 'requested', origin: 'human-fix', requestedAt: request.created_at, requestId: request.id, completedAt: null });
+  assert.deepEqual(state.review, { sha: HEAD, status: 'requested', origin: 'human-fix', requestedAt: request.created_at, requestId: request.id, completedAt: null, baseSha: BASE_TIP });
   assert.match(state.body, /\*\*Stage:\*\* Codex review after owner-requested fix requested; awaiting completion signal\.\n\*\*Codex review:\*\* Awaiting completion signal\n\*\*Commit:\*\* `abc1234`\n\*\*Requested:\*\* 2026-10-01 00:00 UTC \(review after owner-requested fix\)/);
   assert.match(state.body, /No Codex completion signal has been received yet, and no runner waits for one/);
   assert.doesNotMatch(state.body, /timed out|timeout|beyond the/i);
@@ -625,7 +626,7 @@ test('audit: a clean audit is a judgement, so open Codex findings are neither re
     { id: 't1', isResolved: false, authors: [CODEX] },
     { id: 't2', isResolved: false, isOutdated: true, authors: [CODEX] },
   ];
-  assert.equal(await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, rawResult: audit('clean') }), 0);
+  assert.equal(await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, baseSha: BASE_TIP, rawResult: audit('clean') }), 0);
   const state = stateOf(gh, 9);
   assert.equal(state.final, 'complete');
   assert.deepEqual(state.addressed, []);
@@ -641,7 +642,7 @@ test('audit: a clean audit is a judgement, so open Codex findings are neither re
 test('audit: a clean audit with no open Codex findings is ready for human acceptance', async () => {
   const { gh, ctx } = prWorld({ passes: 3, final: 'running' });
   gh.threads[9] = [{ id: 't1', isResolved: true, authors: [CODEX] }];
-  assert.equal(await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, rawResult: audit('clean') }), 0);
+  assert.equal(await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, baseSha: BASE_TIP, rawResult: audit('clean') }), 0);
   const state = stateOf(gh, 9);
   assert.match(state.body, /\*\*Stage:\*\* Holistic final audit completed cleanly; automated review is finished\./);
   assert.match(state.body, /When CI passes, this pull request is ready for human acceptance\./);
@@ -651,7 +652,7 @@ test('audit: a clean audit with no open Codex findings is ready for human accept
 test('audit: findings hand off to the consolidated fix', async () => {
   const { gh, ctx } = prWorld({ passes: 3, final: 'running' });
   const findings = [{ severity: 'P1', location: 'src/a.ts:3', problem: 'p', recommended_fix: 'f' }];
-  await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, rawResult: audit('findings', findings) });
+  await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, baseSha: BASE_TIP, rawResult: audit('findings', findings) });
   assert.equal(ctx.outputs.values.run_fix, 'true');
   assert.deepEqual(JSON.parse(ctx.outputs.values.findings), findings);
   assert.match(stateOf(gh, 9).body, /found 1 issue\(s\); consolidated fix/);
@@ -660,21 +661,21 @@ test('audit: findings hand off to the consolidated fix', async () => {
 test('audit: a branch change during the read-only audit blocks automation', async () => {
   const { gh, ctx } = prWorld({ passes: 3, final: 'running' });
   gh.pulls[9].head.sha = 'tampered';
-  assert.equal(await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, rawResult: audit('clean') }), 1);
+  assert.equal(await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, baseSha: BASE_TIP, rawResult: audit('clean') }), 1);
   assert.equal(stateOf(gh, 9).final, 'blocked');
   assert.match(gh.issueComments(9).at(-1).body, /changed the branch unexpectedly/);
 });
 
 test('audit: blocked and failed audits stop for a human', async () => {
   const blocked = prWorld({ passes: 3, final: 'running' });
-  await flows.finishAudit(blocked.ctx, { ...claudeOk, pr: 9, headSha: HEAD, rawResult: audit('blocked') });
+  await flows.finishAudit(blocked.ctx, { ...claudeOk, pr: 9, headSha: HEAD, baseSha: BASE_TIP, rawResult: audit('blocked') });
   assert.equal(stateOf(blocked.gh, 9).final, 'blocked');
   const failed = prWorld({ passes: 3, final: 'running' });
   assert.equal(await flows.finishAudit(failed.ctx, { claudeOutcome: 'failure', claudeConclusion: 'failure', pr: 9, headSha: HEAD, rawResult: '' }), 1);
   assert.equal(stateOf(failed.gh, 9).final, 'blocked');
 });
 
-const finalInputs = (extra = {}) => ({ ...claudeOk, pr: 9, headSha: HEAD, auditSummary: 'two issues', rawResult: ok('fixed'), validationOutcome: 'success', ...extra });
+const finalInputs = (extra = {}) => ({ ...claudeOk, pr: 9, headSha: HEAD, baseSha: BASE_TIP, auditSummary: 'two issues', rawResult: ok('fixed'), validationOutcome: 'success', ...extra });
 
 test('final fix: a verified fix completes automation without another review; Codex threads it was not given stay a human decision', async () => {
   const { gh, ctx } = prWorld({ passes: 3, final: 'running' });
@@ -846,8 +847,9 @@ test('completion: a summary edit for the awaited commit marks a clean review rea
   assert.equal(await deliver(world, pending), 'clean');
   const state = state17(gh);
   assert.deepEqual([state.passes, state.final], [1, 'not_started'], 'budget and final audit untouched');
-  assert.deepEqual(state.review, { sha: CW, status: 'clean', origin: 'human-fix', requestedAt: state.review.requestedAt, requestId: state.review.requestId, completedAt: '2026-10-05T18:52:10Z' });
-  assert.match(state.body, /\*\*Stage:\*\* Codex review completed with no actionable findings\.\n\*\*Ready for human acceptance at:\*\* `4d1c0e3` \(any later push withdraws this\)\n\*\*Codex review:\*\* Completed — no actionable findings\n\*\*Commit:\*\* `4d1c0e3`\n\*\*Requested:\*\* .*\n\*\*Completed:\*\* 2026-10-05 18:52 UTC/);
+  assert.deepEqual(state.review, { sha: CW, status: 'clean', origin: 'human-fix', requestedAt: state.review.requestedAt, requestId: state.review.requestId, completedAt: '2026-10-05T18:52:10Z', baseSha: BASE_TIP });
+  assert.equal(state.readyBaseSha, BASE_TIP);
+  assert.match(state.body, /\*\*Stage:\*\* Codex review completed with no actionable findings\.\n\*\*Ready for human acceptance at:\*\* `4d1c0e3` on base `ba5eba5` \(a later push to either withdraws this\)\n\*\*Codex review:\*\* Completed — no actionable findings\n\*\*Commit:\*\* `4d1c0e3`\n\*\*Requested:\*\* .*\n\*\*Completed:\*\* 2026-10-05 18:52 UTC/);
   assert.equal(state.readySha, CW);
   assert.match(state.body, /Reported by Codex's review summary; no unresolved Codex findings remain\.\n\nWhen CI passes, this pull request is ready for human acceptance\./);
   assert.doesNotMatch(state.body, /approved/i);
@@ -1296,7 +1298,7 @@ test('head change: a merge from the base withdraws readiness, and the confirmed 
 
 test('head change: readiness from the final audit is withdrawn too', async () => {
   const { gh, ctx } = prWorld({ passes: 3, final: 'running' });
-  await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, rawResult: audit('clean') });
+  await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, baseSha: BASE_TIP, rawResult: audit('clean') });
   assert.equal(stateOf(gh, 9).readySha, HEAD);
   gh.pulls[9].head.sha = FIX;
   const moved = fakeContext(gh);
@@ -1333,7 +1335,7 @@ test('audit: fixes no clean Codex review confirmed are still a human decision at
     { id: 't2', isResolved: false, authors: [CODEX] }, // never fixed; the audit called it non-actionable
   ];
   await updateState(ctx, 9, { fixThreads: [{ thread: 't1', sha: HEAD }], stage: 'seed' });
-  await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, rawResult: audit('clean') });
+  await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, baseSha: BASE_TIP, rawResult: audit('clean') });
   const state = stateOf(gh, 9);
   assert.match(state.body, /2 open Codex finding\(s\) have no fix confirmed by a clean Codex review: the final audit judged them non-actionable\. 1 of them were fixed by verified pushes that no clean Codex review has confirmed\./);
   assert.deepEqual([state.fixed.length, state.addressed.length, state.readySha], [1, 0, null], 'the audit confirms nothing');
@@ -1403,4 +1405,106 @@ test('head change: a push that lands while readiness is being recorded withdraws
   await flows.finishFinalFix(end.ctx, finalInputs());
   assert.deepEqual([stateOf(end.gh, 9).final, stateOf(end.gh, 9).readySha], ['complete', null]);
   assert.match(stateOf(end.gh, 9).body, /moved to b2b2b2b after 5678abc was reported ready/);
+});
+
+// Readiness is bound to the base branch tip as well -------------------------------------------
+
+const NEWBASE = 'b0b0'.repeat(10); // main after another PR merged
+
+test('base: a review of an unchanged head is not clean if the base branch moved while Codex reviewed', async () => {
+  const world = await awaitingWorld();
+  const { gh } = world;
+  assert.equal(state17(gh).review.baseSha, BASE_TIP, 'the request records the base tip, not pull.base.sha');
+  gh.branches.main.sha = NEWBASE; // main advances; GitHub sends the PR no event
+  assert.equal(await deliver(world, summaryComment(gh)), 'outdated');
+  const state = state17(gh);
+  assert.deepEqual([state.review.status, state.readySha], ['outdated', null]);
+  assert.match(state.body, /Codex review of 4d1c0e3 completed, but the base branch moved from ba5eba5 to b0b0b0b during the review; not ready for human acceptance\./);
+  assert.match(state.body, /Update the branch from its base, or comment `\/agent-review`, to have Codex review the current combination\./);
+});
+
+test('base: a review requested before bases were recorded cannot establish readiness', async () => {
+  const gh = new FakeGitHub();
+  gh.addPull({ number: 17, head: { ref: 'feature/brand', sha: CW } });
+  gh.labelEvent(17, 'agent-review', BOT);
+  const legacy = { sha: CW, status: 'requested', origin: 'remediation', requestedAt: '2026-10-05T18:46:00Z', requestId: 5, completedAt: null }; // no baseSha
+  gh.addComment(17, renderState({ passes: 1, final: 'not_started', review: legacy, maxPasses: 3, stage: 'awaiting' }), BOT);
+  assert.equal(await deliver({ gh, config: defaultConfig() }, summaryComment(gh)), 'outdated');
+  assert.match(state17(gh).body, /but the base branch tip at the start of the review was not recorded; not ready for human acceptance/);
+});
+
+test('base: an unreadable base tip leaves the review awaiting, for a later signal to retry', async () => {
+  const world = await awaitingWorld();
+  const { gh } = world;
+  const before = state17(gh).body;
+  delete gh.branches.main;
+  const ctx = fakeContext(gh, { config: world.config, event: { action: 'edited', issue: { number: 17, pull_request: {} }, comment: summaryComment(gh) } });
+  await assert.rejects(flows.recordCodexCompletion(ctx, { pr: 17 }), /404/);
+  assert.equal(state17(gh).body, before);
+});
+
+test('base: readiness established on one base is withdrawn once a locked check sees a newer base', async () => {
+  const world = await readyWorld();
+  const { gh, config } = world;
+  assert.equal(state17(gh).readyBaseSha, BASE_TIP);
+  gh.branches.main.sha = NEWBASE;
+  // Any locked check of the claim compares the base tip, here a late push job for the same head.
+  assert.equal(await push(world, CW), 'withdrawn');
+  const state = state17(gh);
+  assert.deepEqual([state.readySha, state.review.status], [null, 'outdated']);
+  assert.match(state.body, /The base branch moved to b0b0b0b after 4d1c0e3 was reported ready on ba5eba5; not ready for human acceptance\./);
+  // A new review against the current base restores readiness.
+  await flows.reviewCycle(fakeContext(gh, { config }), { pr: 17, origin: 'opt-in' });
+  assert.equal(state17(gh).review.baseSha, NEWBASE);
+  assert.equal(await deliver(world, gh.addComment(17, cleanResult(CW.slice(0, 10)), CODEX), 'created'), 'clean');
+  assert.deepEqual([state17(gh).readySha, state17(gh).readyBaseSha], [CW, NEWBASE]);
+});
+
+test('base: a base advance while readiness is being recorded withdraws it', async () => {
+  const world = await awaitingWorld();
+  const { gh } = world;
+  gh.onRequest = (method, path) => {
+    if (method === 'PATCH') gh.branches.main.sha = NEWBASE; // just as the claim is written
+  };
+  assert.equal(await deliver(world, summaryComment(gh)), 'outdated');
+  gh.onRequest = null;
+  assert.equal(state17(gh).readySha, null);
+  assert.match(state17(gh).body, /The base branch moved to b0b0b0b after 4d1c0e3 was reported ready on ba5eba5/);
+});
+
+test('base: a review awaited against an older base no longer counts once a locked check sees the newer one', async () => {
+  const world = await awaitingWorld();
+  world.gh.branches.main.sha = NEWBASE;
+  assert.equal(await push(world, CW), 'outdated');
+  assert.match(state17(world.gh).body, /The base branch moved to b0b0b0b while Codex was reviewing 4d1c0e3 against ba5eba5; that review does not cover it\./);
+});
+
+test('base: an unreadable base tip never withdraws readiness on its own', async () => {
+  const world = await readyWorld();
+  const before = state17(world.gh).body;
+  delete world.gh.branches.main;
+  assert.equal(await push(world, CW), 'unchanged', 'compares the head only');
+  assert.equal(state17(world.gh).body, before);
+});
+
+test('base: escalation is evidence about the base tip it started on', async () => {
+  const plan = prWorld({ passes: 3 });
+  plan.gh.addComment(9, requestBody('remediation'), 'owner');
+  await flows.planRemediation(plan.ctx, { pr: 9 });
+  assert.deepEqual([plan.ctx.outputs.values.mode, plan.ctx.outputs.values.base_sha], ['escalate', BASE_TIP]);
+
+  const audited = prWorld({ passes: 3, final: 'running' });
+  audited.gh.branches.main.sha = NEWBASE;
+  await flows.finishAudit(audited.ctx, { ...claudeOk, pr: 9, headSha: HEAD, baseSha: BASE_TIP, rawResult: audit('clean') });
+  const a = stateOf(audited.gh, 9);
+  assert.deepEqual([a.final, a.readySha], ['complete', null]);
+  assert.match(a.body, /Holistic final audit completed cleanly, but the base branch moved; not ready for human acceptance/);
+  assert.match(a.body, /Readiness is withheld: the base branch moved from ba5eba5 to b0b0b0b during the final audit\./);
+
+  const fixed = prWorld({ passes: 3, final: 'running' });
+  fixed.gh.pulls[9].head.sha = FIX;
+  await flows.finishFinalFix(fixed.ctx, finalInputs({ baseSha: '' }));
+  assert.equal(stateOf(fixed.gh, 9).readySha, null);
+  assert.match(stateOf(fixed.gh, 9).body, /Readiness is withheld: the base branch tip at the start of escalation was not recorded\./);
+  assert.doesNotMatch(stateOf(fixed.gh, 9).body, /ready for human acceptance\./);
 });

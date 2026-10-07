@@ -412,6 +412,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.plan.outputs.head_sha }}
+          BASE_SHA: ${{ steps.plan.outputs.base_sha }}
           CLAUDE_OUTCOME: ${{ steps.audit.outcome }}
           CLAUDE_CONCLUSION: ${{ steps.audit.outputs.conclusion }}
           RAW_RESULT: ${{ steps.audit.outputs.structured_output }}
@@ -471,6 +472,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ steps.plan.outputs.head_sha }}
+          BASE_SHA: ${{ steps.plan.outputs.base_sha }}
           AUDIT_SUMMARY: ${{ steps.finish_audit.outputs.summary }}
           CLAUDE_OUTCOME: ${{ steps.final_fix.outcome }}
           CLAUDE_CONCLUSION: ${{ steps.final_fix.outputs.conclusion }}
