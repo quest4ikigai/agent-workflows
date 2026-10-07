@@ -103,7 +103,12 @@ resolution had never worked.
   listens to `pull_request` `synchronize` on opted-in PRs; re-run `install`. A
   new `Record head change` job (same permissions as `Record Codex completion`)
   marks the old review outdated; readiness returns only through a Codex review of
-  the new head.
+  the new head. It compares against the PR head GitHub reports inside the lock,
+  never the event's, so a late job for an older push cannot touch newer state,
+  and every job that records readiness re-reads the head after writing, so a
+  push that lands meanwhile is not lost to the gate's unlocked pre-filter. Pushes
+  made with another workflow's `GITHUB_TOKEN` start no workflows (a GitHub rule)
+  and so cannot withdraw readiness.
 - Only the threads a verified pass fixed are resolved on GitHub, never all open
   Codex threads; the attempt stops at the first refusal with one log line, and the
   status says how many stay open for the human. No permissions change.

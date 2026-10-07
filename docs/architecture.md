@@ -280,9 +280,33 @@ with `/agent-review`, completes cleanly. That review re-checks every fix record
 against the new head, so a revert that dropped a fix cannot become ready again.
 Pushes the automation already accounted for (Claude's, followed by its own
 re-review request) change nothing, and the gate filters them out before any
-locked job is queued. GitHub runs no `pull_request` workflows while a PR has
+locked job is queued.
+
+How a push reaches the right PR, and only it:
+
+- The trigger is `pull_request` `synchronize`, not `push`. GitHub sends one per
+  pull request whose head branch moved, carrying that PR's number, so there is no
+  branch-to-PR lookup. A branch that heads several PRs yields one event, and one
+  state comment and lock, per PR.
+- A push to `main` or another base branch moves no PR head; a PR whose *head* is
+  a base or default branch is refused by the gate, as are fork PRs, PRs without
+  the `agent-review` label (filtered in the wrapper already) and closed PRs.
+  Branches without a PR produce no event at all.
+- The locked job compares the state with the PR's head as GitHub reports it
+  inside the lock, never the event's. A late job for an older push therefore
+  sees the newer head, and since it can only withdraw a claim, never make one,
+  it cannot undo a readiness re-established for that head.
+- The gate filters pushes against state read without the lock, so a push that
+  lands while a job is recording readiness may be filtered before the claim
+  exists. Every job that records readiness therefore reads the head again right
+  after writing and withdraws the claim if it moved.
+
+Two cases no event covers. GitHub runs no `pull_request` workflows while a PR has
 merge conflicts, but such a PR cannot be merged, and resolving the conflict is a
-push that withdraws readiness.
+push that withdraws readiness. And pushes made by another workflow with its
+`GITHUB_TOKEN` start no workflows at all (a GitHub rule), so they cannot withdraw
+readiness; the status shows the commit its claim covers. Readiness is about the
+head: a base branch that moves on does not withdraw it.
 
 **Budget accounting:** a pass is consumed only when a countable remediation
 actually pushes a branch mutation, that is, Claude returns `fixed` and the

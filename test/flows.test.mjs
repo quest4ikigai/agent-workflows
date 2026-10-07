@@ -1352,3 +1352,55 @@ test('addressed threads: a review that completes with findings confirms nothing'
     assert.deepEqual([state.fixed.length, state.addressed.length, state.readySha], [3, 0, null], variant);
   }
 });
+
+test('head change: a late job for an older push cannot overwrite newer state', async () => {
+  const world = await readyWorld();
+  const { gh, config } = world;
+  const H1 = 'a1'.repeat(20);
+  const H2 = 'a2'.repeat(20);
+  // Two pushes land before the first push's job runs; its event still says H1.
+  gh.pulls[17].head.sha = H2;
+  const late = (sha) => fakeContext(gh, { config, event: { action: 'synchronize', pull_request: { number: 17, head: { sha } } } });
+  const first = late(H1);
+  await flows.recordHeadChange(first, { pr: 17 });
+  assert.equal(first.outputs.values.result, 'withdrawn');
+  assert.match(state17(gh).body, /The pull request head moved to a2a2a2a after 4d1c0e3 was reported ready/, 'uses the current head, not the event\'s');
+
+  // Readiness is re-established for H2; jobs for either older event change nothing.
+  await flows.reviewCycle(fakeContext(gh, { config }), { pr: 17, origin: 'opt-in' });
+  assert.equal(await deliver(world, gh.addComment(17, cleanResult(H2.slice(0, 10)), CODEX), 'created'), 'clean');
+  const ready = state17(gh).body;
+  for (const sha of [H1, H2]) {
+    const job = late(sha);
+    await flows.recordHeadChange(job, { pr: 17 });
+    assert.equal(job.outputs.values.result, 'unchanged', sha);
+  }
+  assert.equal(state17(gh).body, ready);
+  assert.equal(state17(gh).readySha, H2);
+});
+
+test('head change: a push that lands while readiness is being recorded withdraws it', async () => {
+  // The gate filters pushes against unlocked state, so it may have seen the
+  // state before the claim; the writer re-checks the head after writing.
+  const world = await awaitingWorld();
+  const { gh } = world;
+  const H2 = 'b2'.repeat(20);
+  gh.onRequest = (method, path) => {
+    if (method === 'GET' && path.endsWith('/pulls/17/reviews')) gh.pulls[17].head.sha = H2; // after the head was read
+  };
+  assert.equal(await deliver(world, summaryComment(gh)), 'outdated');
+  gh.onRequest = null;
+  const state = state17(gh);
+  assert.equal(state.readySha, null);
+  assert.equal(state.review.status, 'outdated');
+  assert.match(state.body, /The pull request head moved to b2b2b2b after 4d1c0e3 was reported ready; not ready for human acceptance\./);
+
+  const end = prWorld({ passes: 3, final: 'running' });
+  end.gh.pulls[9].head.sha = FIX;
+  end.gh.onRequest = (method, path) => {
+    if (path === 'graphql') end.gh.pulls[9].head.sha = H2; // while open findings are counted
+  };
+  await flows.finishFinalFix(end.ctx, finalInputs());
+  assert.deepEqual([stateOf(end.gh, 9).final, stateOf(end.gh, 9).readySha], ['complete', null]);
+  assert.match(stateOf(end.gh, 9).body, /moved to b2b2b2b after 5678abc was reported ready/);
+});

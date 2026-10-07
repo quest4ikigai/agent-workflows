@@ -112,6 +112,7 @@ export class FakeGitHub {
     this.nextId = 1000;
     this.clock = Date.parse('2026-10-01T00:00:00Z');
     this.onPoll = null; // hook invoked on review polling
+    this.onRequest = null; // hook (method, path) invoked before every request
   }
 
   now() {
@@ -177,6 +178,7 @@ export class FakeGitHub {
     const body = init.body ? JSON.parse(init.body) : undefined;
     const login = this.tokens[token];
     this.calls.push({ method, path: p + u.search, body, login });
+    if (this.onRequest) this.onRequest(method, p);
     const result = this.route(method, p, u.searchParams, body, login, token);
     const status = result.status ?? 200;
     const data = result.data ?? null;

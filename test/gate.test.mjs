@@ -391,3 +391,27 @@ test('push: only a push that invalidates readiness or the awaited review starts 
   fork.addPull({ number: 12, head: { ref: 'x', repo: { full_name: 'mallory/widget' } }, labels: [{ name: 'agent-review' }] });
   assert.match((await gateReview({ client: fork.client(), repo, config: cfg(), ...push(NEW, 12) })).reason, /fork/);
 });
+
+test('push: each event is mapped by its own PR number; main, unrelated PRs and forks start nothing', async () => {
+  const NEW = 'b'.repeat(40);
+  const ready = { readySha: SHA, review: { sha: SHA, status: 'clean', origin: 'opt-in', requestedAt: null, requestId: null, completedAt: null } };
+  const gh = pushWorld(ready);
+  // PR 11 shares PR 10's head branch (another base); GitHub sends one event per PR.
+  gh.addPull({ number: 11, head: { ref: 'human/feature' }, base: { ref: 'release' } });
+  gh.branches.release = { protected: true };
+  gh.labelEvent(11, 'agent-review', BOT);
+  gh.addComment(11, renderState({ passes: 0, final: 'not_started', maxPasses: 3, stage: 'awaiting', review: { ...ready.review, status: 'requested', sha: NEW } }), BOT);
+  const client = gh.client();
+  const ten = await gateReview({ client, repo, config: cfg(), ...push(NEW, 10) });
+  const eleven = await gateReview({ client, repo, config: cfg(), ...push(NEW, 11) });
+  assert.deepEqual([ten.action, ten.prNumber], ['head-moved', 10]);
+  assert.equal(eleven.action, 'none', "PR 11's own state already covers the new head");
+
+  // A PR whose head is the base branch (a push to main): refused before any state is read.
+  gh.addPull({ number: 12, head: { ref: 'main' }, labels: [{ name: 'agent-review' }] });
+  assert.match((await gateReview({ client, repo, config: cfg(), ...push(NEW, 12) })).reason, /base\/default branch/);
+  // Opted-in PRs only (the wrapper also filters on the label).
+  gh.addPull({ number: 13, head: { ref: 'other' } });
+  assert.match((await gateReview({ client, repo, config: cfg(), ...push(NEW, 13) })).reason, /does not carry the agent-review label/);
+  assert.ok(!gh.calls.some((c) => c.method !== 'GET'), 'the gate writes nothing');
+});
