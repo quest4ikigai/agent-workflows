@@ -162,6 +162,7 @@ test('current Codex findings: unresolved, Codex-opened, not outdated; path, line
       title: 'Check generated public derivatives for drift',
       latest: true,
       replies: 1,
+      url: 'https://github.com/acme/widget/pull/7#discussion_PRRT_drift_0',
       body: DRIFT_FINDING,
     },
     {
@@ -173,6 +174,7 @@ test('current Codex findings: unresolved, Codex-opened, not outdated; path, line
       title: 'Cover the ICO sizes',
       latest: false,
       replies: 0,
+      url: 'https://github.com/acme/widget/pull/7#discussion_PRRT_ico_0',
       body: '**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Cover the ICO sizes**\n\nNo test checks the ICO.',
     },
   ]);

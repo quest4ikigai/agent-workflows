@@ -122,6 +122,23 @@ resolution had never worked.
   Codex threads; the attempt stops at the first refusal with one log line, and the
   status says how many stay open for the human. No permissions change.
 
+### Finding disclosure in the status comment
+
+The status comment said only how many fixed Codex threads were still open ("3
+earlier findings confirmed"), not which.
+
+- Whenever a review completes or escalation ends, the status lists the open Codex
+  threads behind the decision, from the same read of GitHub: **Confirmed fixed,
+  still open on GitHub** (title, `path:line`, fix commit, the head of the
+  confirming clean review, link to the thread) and **Still requires action** (no
+  verified fix; fixed but not yet confirmed; or fixed by a commit no longer in
+  the branch).
+- Confirmed records also store the confirming review's head
+  (`addressed_threads=<thread>@<fix>@<confirmed-by>`); records written before
+  still parse and show "head not recorded". Evidence and readiness are unchanged.
+- Lists are sorted by path and line (code-point order), capped at 25 entries each,
+  and Codex's text is rendered inert.
+
 ## 1.0.0 — 2026-10-05
 
 Initial version, extracted and generalized from the mealie-mcp-server agent

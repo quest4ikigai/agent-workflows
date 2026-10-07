@@ -1091,9 +1091,13 @@ test('addressed threads: a verified fix makes the next clean review ready althou
   const ready = state17(gh);
   assert.match(ready.body, /\*\*Stage:\*\* Codex review completed with no actionable findings\./);
   assert.match(ready.body, /This clean review of fefefef confirms the fixes for 3 earlier finding\(s\)\./);
-  assert.match(ready.body, /3 Codex thread\(s\) fixed by verified remediation passes are still open on GitHub, because resolving needs Contents: write; resolve them when you accept\./);
+  assert.match(
+    ready.body,
+    /\*\*Confirmed fixed, still open on GitHub \(3\):\*\* resolve these threads when you accept; agent-workflows cannot, as resolving needs Contents: write\.\n- Finding PRRT\\_a · `src\/x\.ts:1` · fixed in `fefefef`, confirmed by the clean review of `fefefef` · \[thread\]\(https:\/\/github\.com\/acme\/widget\/pull\/17#discussion_PRRT_a_0\)\n- Finding PRRT\\_b [^\n]*\n- Finding PRRT\\_c [^\n]*\n\nWhen CI passes/,
+  );
+  assert.doesNotMatch(ready.body, /Still requires action/);
   assert.match(ready.body, /When CI passes, this pull request is ready for human acceptance\./);
-  assert.deepEqual([ready.fixed, ready.addressed, ready.readySha], [[], records, fixed], 'the clean review promotes the fixes it covers');
+  assert.deepEqual([ready.fixed, ready.addressed, ready.readySha], [[], records.map((r) => ({ ...r, confirmedBy: fixed })), fixed], 'the clean review promotes the fixes it covers, recording which review did');
 });
 
 test('addressed threads: a finding Claude was never given still blocks readiness', async () => {
@@ -1507,4 +1511,87 @@ test('base: escalation is evidence about the base tip it started on', async () =
   assert.equal(stateOf(fixed.gh, 9).readySha, null);
   assert.match(stateOf(fixed.gh, 9).body, /Readiness is withheld: the base branch tip at the start of escalation was not recorded\./);
   assert.doesNotMatch(stateOf(fixed.gh, 9).body, /ready for human acceptance\./);
+});
+
+// Finding disclosure in the status comment -----------------------------------------------------
+
+test('disclosure: 4 open Codex threads, 3 confirmed fixed: the status names each, and the 4th as still requiring action', async () => {
+  const world = await findingsWorld();
+  const { gh, config } = world;
+  const fixed = 'fe'.repeat(20);
+  await verifiedFix(world, fixed);
+  assert.equal(await deliver(world, gh.addComment(17, cleanResult(fixed.slice(0, 10)), CODEX), 'created'), 'clean');
+  // A fourth Codex thread is open and no verified pass ever fixed it.
+  gh.threads[17].push({ id: 'PRRT_d', isResolved: false, path: 'src/d.ts', line: 4, comments: [{ author: CODEX, body: '**<sub><sub>![P1 Badge](x)</sub></sub>  Cover the ICO sizes**' }] });
+  await flows.reviewCycle(fakeContext(gh, { config }), { pr: 17, origin: 'opt-in' });
+  assert.equal(await deliver(world, gh.addComment(17, cleanResult(fixed.slice(0, 10)), CODEX), 'created'), 'findings');
+
+  const state = state17(gh);
+  assert.equal(state.readySha, null, 'disclosure changes no rule: the unconfirmed finding still blocks readiness');
+  const details = state.body.split('**Final audit:**')[1];
+  assert.match(state.body, /\*\*Stage:\*\* Codex review completed without new findings, but 1 earlier unresolved Codex finding\(s\) remain; human input required\./);
+  const confirmed = details.match(/\*\*Confirmed fixed, still open on GitHub \(3\):\*\*[^\n]*\n((?:- [^\n]*\n?){3})/);
+  assert.ok(confirmed, details);
+  const lines = confirmed[1].trim().split('\n');
+  assert.deepEqual(lines.map((l) => l.match(/`([^`]+)`/)[1]), ['src/x.ts:1', 'src/x.ts:2', 'src/x.ts:3']);
+  for (const [i, line] of lines.entries()) {
+    const id = `PRRT_${'abc'[i]}`;
+    assert.ok(line.includes(`Finding ${id.replace('_', '\\_')}`), line);
+    assert.ok(line.includes('fixed in `fefefef`, confirmed by the clean review of `fefefef`'), line);
+    assert.ok(line.includes(`[thread](https://github.com/acme/widget/pull/17#discussion_${id}_0)`), line);
+  }
+  assert.match(
+    details,
+    /\*\*Still requires action \(1\):\*\*\n- \*\*P1\*\* Cover the ICO sizes · `src\/d\.ts:4` · no verified fix · \[thread\]\(https:\/\/github\.com\/acme\/widget\/pull\/17#discussion_PRRT_d_0\)/,
+  );
+});
+
+test('disclosure: the status lists exactly the threads the decision was made on', async () => {
+  for (const outcome of ['clean', 'findings (leftover)', 'findings (formal review)']) {
+    const world = await findingsWorld();
+    const { gh } = world;
+    const fixed = 'fe'.repeat(20);
+    await verifiedFix(world, fixed);
+    if (outcome === 'findings (leftover)') gh.threads[17].push({ id: 'PRRT_left', isResolved: false, path: 'src/z.ts', line: 3, comments: [{ author: CODEX, body: 'left' }] });
+    if (outcome === 'findings (formal review)') gh.addReview(17, CODEX, 'More', { commit_id: fixed });
+    const before = gh.calls.length;
+    assert.equal(await deliver(world, gh.addComment(17, cleanResult(fixed.slice(0, 10)), CODEX), 'created'), outcome.split(' ')[0]);
+    const threadReads = gh.calls.slice(before).filter((c) => c.body?.query?.includes('reviewThreads'));
+    assert.equal(threadReads.length, 1, `${outcome}: one read of the threads serves the decision and its disclosure`);
+  }
+});
+
+test('disclosure: a review with new findings lists what is open and what is already confirmed', async () => {
+  const world = await findingsWorld();
+  const { gh } = world;
+  const fixed = 'fe'.repeat(20);
+  await verifiedFix(world, fixed);
+  gh.addReview(17, CODEX, 'More', { commit_id: fixed });
+  assert.equal(await deliver(world, gh.addComment(17, codexSummary({ commit: fixed.slice(0, 7) }), CODEX)), 'findings');
+  const body = state17(gh).body;
+  assert.match(body, /\*\*Still requires action \(3\):\*\*/);
+  assert.match(body, /Finding PRRT\\_a · `src\/x\.ts:1` · fixed in `fefefef`, not yet confirmed by a clean Codex review/);
+  assert.doesNotMatch(body, /Confirmed fixed/, 'nothing is confirmed by a review with findings');
+});
+
+test('disclosure: at the end of escalation every open thread is accounted for', async () => {
+  const { gh, ctx } = prWorld({ passes: 3, final: 'running' });
+  const OLD = 'c1'.repeat(20); // a fix commit no longer in the branch
+  const REVIEWED = 'c2'.repeat(20);
+  const codex = (id, line) => ({ id, isResolved: false, path: 'src/e.ts', line, comments: [{ author: CODEX, body: `**Finding ${id}**` }] });
+  gh.threads[9] = [codex('t_confirmed', 1), codex('t_pending', 2), codex('t_lost', 3), codex('t_none', 4)];
+  await updateState(ctx, 9, {
+    fixThreads: [{ thread: 't_pending', sha: HEAD }, { thread: 't_lost', sha: OLD }],
+    confirmThreads: [{ thread: 't_confirmed', sha: HEAD, confirmedBy: REVIEWED }],
+    stage: 'seed',
+  });
+  await flows.finishAudit(ctx, { ...claudeOk, pr: 9, headSha: HEAD, baseSha: BASE_TIP, rawResult: audit('clean') });
+  const body = stateOf(gh, 9).body;
+  assert.match(body, /3 open Codex finding\(s\) have no fix confirmed by a clean Codex review/);
+  assert.match(body, /\*\*Confirmed fixed, still open on GitHub \(1\):\*\*[^\n]*\n- Finding t\\_confirmed · `src\/e\.ts:1` · fixed in `abc1234`, confirmed by the clean review of `c2c2c2c`/);
+  assert.match(
+    body,
+    /\*\*Still requires action \(3\):\*\*\n- Finding t\\_pending · `src\/e\.ts:2` · fixed in `abc1234`, not yet confirmed by a clean Codex review · [^\n]+\n- Finding t\\_lost · `src\/e\.ts:3` · fixed in `c1c1c1c`, which is no longer in the branch · [^\n]+\n- Finding t\\_none · `src\/e\.ts:4` · no verified fix · /,
+  );
+  assert.equal(stateOf(gh, 9).readySha, null);
 });

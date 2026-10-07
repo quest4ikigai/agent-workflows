@@ -183,7 +183,7 @@ State is a single PR comment written by `github-actions[bot]`:
 <!-- review_request_id=3412345678 -->
 <!-- review_base_sha=87be31d2bd… -->
 <!-- fixed_threads=PRRT_kwDOUUJ5e86pINYh@53d8ae2… -->
-<!-- addressed_threads=PRRT_kwDOUUJ5e86pINYp@1a2b3c4… -->
+<!-- addressed_threads=PRRT_kwDOUUJ5e86pINYp@1a2b3c4…@9f8e7d6… -->
 ### Agent review status
 **Stage:** Codex review after owner-requested fix requested; awaiting completion signal.
 **Codex review:** Awaiting completion signal
@@ -199,7 +199,8 @@ accidentally (or deliberately) reset the budget by pasting the markers, and
 markers are read only above the heading, so text quoted in the details cannot
 add any. The `review_*` markers track the Codex review being awaited;
 `fixed_threads` and `addressed_threads` list Codex threads fixed by verified
-pushes, unconfirmed and confirmed, each with the commit that fixed it; and
+pushes, unconfirmed and confirmed, each with the commit that fixed it (and, once
+confirmed, the head of the clean review that confirmed it); and
 `ready_sha` is the head a "ready for human acceptance" claim covers (see below).
 State written before these existed simply has none.
 
@@ -267,7 +268,16 @@ out and unconfirmed ones are listed, marked with their fix commit, for Claude to
 check. At the end of escalation only confirmed fixes count, so fixes no clean
 review confirmed are left for a human. The workflow still tries to resolve
 exactly the threads a verified pass fixed, stopping at the first refusal, and the
-status comment says how many stay open. If Codex does not repeat issues that
+status comment says how many stay open.
+
+Whenever a review completes or escalation ends, the status comment lists the
+open Codex threads it decided on, from the same read of GitHub: **Confirmed
+fixed, still open on GitHub** (title, location, fix commit, the head of the
+confirming clean review, and a link to the thread) and **Still requires
+action** (each marked: no verified fix; fixed but not yet confirmed; or fixed by
+a commit no longer in the branch). The lists are sorted by path and line, capped
+at 25 entries each, and Codex's text is rendered inert. They describe the
+evidence and change no decision. If Codex does not repeat issues that
 already have an open thread, a clean review is weaker evidence than it looks;
 only a human resolving the thread, or GitHub marking it outdated, is unambiguous.
 

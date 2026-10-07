@@ -165,6 +165,10 @@ it.
   containing that commit confirms them. A judgement (the final audit, Claude's
   `no_change`) never records or confirms anything, and a record stops counting
   once a rebase or force-push drops its commit from the branch.
+- Codex text the status comment lists (finding titles, file paths) is rendered
+  inert: one line, Markdown and HTML escaped, `@` mentions broken, and only
+  `https` thread links kept. It sits below the heading, where no state marker is
+  read.
 - "Ready for human acceptance" is bound to the head it was established for and
   to the base branch tip Codex reviewed against, and is withdrawn by any later
   push or by any locked check that finds a newer base tip, so it cannot outlive

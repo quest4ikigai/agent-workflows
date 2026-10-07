@@ -296,9 +296,10 @@ export class FakeGitHub {
                   line: t.line ?? null,
                   startLine: t.startLine ?? null,
                   comments: {
-                    nodes: (t.comments ?? t.authors.map((author) => ({ author }))).map((c) => ({
+                    nodes: (t.comments ?? t.authors.map((author) => ({ author }))).map((c, i) => ({
                       author: typeof c.author === 'object' ? c.author : actor(c.author),
                       body: c.body ?? '',
+                      url: c.url ?? `https://github.com/${this.repo}/pull/${body.variables.number}#discussion_${t.id}_${i}`,
                       pullRequestReview: c.review ? { databaseId: c.review } : null,
                     })),
                   },

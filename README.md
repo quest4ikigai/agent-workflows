@@ -168,7 +168,9 @@ token with Contents: write resolve a review thread, and agent-workflows' tokens 
 read-only by design. The status comment records each fix with its commit, and a
 clean Codex re-review of a head containing that commit confirms it; a fix counts
 only while its commit is in the branch. An audit's verdict never records a fix.
-Resolve the threads yourself when you accept.
+The status comment lists each open thread: confirmed fixes still open on GitHub
+(with the fix commit, the confirming review and a link), and those that still
+require action. Resolve the threads yourself when you accept.
 
 ## Security model (summary)
 
