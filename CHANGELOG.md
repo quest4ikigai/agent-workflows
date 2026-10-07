@@ -84,17 +84,26 @@ Contents: write, which `GITHUB_TOKEN` and the PAT deliberately lack; thread
 resolution had never worked.
 
 - After a remediation pass with a verified push and passing validation, the
-  findings Claude was given are recorded as addressed in the status comment,
-  each bound to the pushed commit (`addressed_threads=<thread>@<sha>`). Nothing
-  else records a fix: not the read-only final audit's verdict, not the final fix
-  (which is given the audit's findings, not the threads), not `no_change`.
-- A record counts only while the PR head is that commit or descends from it
+  findings Claude was given are recorded as fixed, each bound to the pushed commit
+  (`fixed_threads=<thread>@<sha>`). A clean Codex review of a head containing that
+  commit confirms them (`addressed_threads`). Nothing else records or confirms a
+  fix: not the read-only final audit's verdict, not the final fix (which is given
+  the audit's findings, not the threads), not `no_change`, not a review that
+  completes with findings.
+- A record counts only while the PR head is its commit or descends from it
   (GitHub's compare API). A merge from the base keeps it; a rebase or force-push
   that drops the fix voids it, and the finding counts again.
-- Addressed findings do not block "ready for human acceptance" and are left out of
-  later remediation and `/agent-fix` prompts. Any other open Codex finding still
-  blocks, including at the end of escalation, where the status says it awaits a
-  human decision instead of calling the PR ready.
+- Fixes in the branch do not block a clean review's readiness. Later prompts leave
+  confirmed fixes out and list unconfirmed ones, marked with their fix commit, for
+  Claude to check. At the end of escalation only confirmed fixes count, and any
+  other open Codex finding is reported as awaiting a human decision instead of
+  calling the PR ready.
+- "Ready for human acceptance" is recorded with the head it covers (`ready_sha`)
+  and withdrawn by any later push. **Wrapper change:** `agent-review.yml` also
+  listens to `pull_request` `synchronize` on opted-in PRs; re-run `install`. A
+  new `Record head change` job (same permissions as `Record Codex completion`)
+  marks the old review outdated; readiness returns only through a Codex review of
+  the new head.
 - Only the threads a verified pass fixed are resolved on GitHub, never all open
   Codex threads; the attempt stops at the first refusal with one log line, and the
   status says how many stay open for the human. No permissions change.

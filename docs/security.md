@@ -81,6 +81,7 @@ If Claude's push fails with a 403, do not widen either token. See the
 | Request Codex review (Path A) | read | write | write | — | — |
 | Start review cycle | read | write | write | — | — |
 | Record Codex completion | read | write | write | — | — |
+| Record head change | read | write | write | — | — |
 | Remediate / escalate | read | write | write | read | write² |
 | Apply feedback (`/agent-fix`) | read | write | write | read | write² |
 
@@ -158,11 +159,14 @@ it.
   branch), so a `fixed` result that pushed nothing cannot consume budget, request
   a review or complete automation, and Claude's `no_change` never resolves Codex
   threads. See [architecture.md](architecture.md#agent-results-are-verified-not-trusted).
-- Codex threads are recorded as addressed only by the workflow, only after a
+- Codex threads are recorded as fixed only by the workflow, only after a
   verified push that passed validation, and only for the findings it collected
-  and gave Claude, bound to the pushed commit. A judgement (the final audit,
-  Claude's `no_change`) never records anything, and a record stops counting once
-  a rebase or force-push drops its commit from the branch. The workflow does not
+  and gave Claude, bound to the pushed commit; a clean Codex review of a head
+  containing that commit confirms them. A judgement (the final audit, Claude's
+  `no_change`) never records or confirms anything, and a record stops counting
+  once a rebase or force-push drops its commit from the branch.
+- "Ready for human acceptance" is bound to the head it was established for and
+  withdrawn by any later push, so it cannot outlive the commit Codex reviewed. The workflow does not
   resolve threads on GitHub: that needs Contents: write, which no agent-workflows
   token is given, so the human resolves them.
 - A Codex completion signal can only move the review being awaited from

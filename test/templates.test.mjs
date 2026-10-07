@@ -52,6 +52,7 @@ test('wrapper pre-filters match the fixed trigger conventions', () => {
   assert.match(review, /startsWith\(github\.event\.review\.user\.login, 'chatgpt-codex-connector'\)/);
   assert.match(review, /startsWith\(github\.event\.comment\.body, '\/agent-review'\)/);
   assert.match(review, /^  issue_comment:\n    types: \[created, edited\]$/m, 'Codex edits its review summary');
+  assert.match(review, /^  pull_request:\n    types: \[labeled, synchronize\]$/m, 'a push withdraws readiness');
   const fix = renderWrapper('agent-human-fix', { ref: 'v1' });
   assert.match(fix, /startsWith\(github\.event\.comment\.body, '\/agent-fix'\)/);
   assert.match(fix, /github\.event\.issue\.pull_request != null/);
@@ -158,8 +159,12 @@ test('review wrapper starts a run for commands, Codex reviews and Codex completi
     ['Codex review', { event_name: 'pull_request_review', event: { review: { user: user(CODEX) } } }, true],
     ['human review', { event_name: 'pull_request_review', event: { review: { user: user('owner') } } }, false],
     ['look-alike human review', { event_name: 'pull_request_review', event: { review: { user: { login: 'chatgpt-codex-connector-x', type: 'User' } } } }, false],
-    ['agent-review label', { event_name: 'pull_request', event: { label: { name: 'agent-review' } } }, true],
-    ['other label', { event_name: 'pull_request', event: { label: { name: 'bug' } } }, false],
+    ['agent-review label', { event_name: 'pull_request', event: { action: 'labeled', label: { name: 'agent-review' } } }, true],
+    ['other label', { event_name: 'pull_request', event: { action: 'labeled', label: { name: 'bug' } } }, false],
+    ['push to an opted-in PR', { event_name: 'pull_request', event: { action: 'synchronize', pull_request: { labels: [{ name: 'bug' }, { name: 'agent-review' }] } } }, true],
+    ['push to another PR', { event_name: 'pull_request', event: { action: 'synchronize', pull_request: { labels: [{ name: 'bug' }] } } }, false],
+    ['push to a PR without labels', { event_name: 'pull_request', event: { action: 'synchronize', pull_request: { labels: [] } } }, false],
+    ['other pull_request action on an opted-in PR', { event_name: 'pull_request', event: { action: 'edited', pull_request: { labels: [{ name: 'agent-review' }] } } }, false],
   ];
   for (const [what, github, runs] of cases) assert.equal(evaluateExpression(condition, { github }), runs, what);
 });

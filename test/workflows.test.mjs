@@ -129,6 +129,7 @@ test('PR-mutating jobs share one lock per PR; implementation locks per issue', (
     ['review.yml', 'agent-pr', 'needs.gate.outputs.pr_number'],
     ['review.yml', 'agent-pr', 'needs.gate.outputs.pr_number'],
     ['review.yml', 'agent-pr', 'needs.gate.outputs.pr_number'],
+    ['review.yml', 'agent-pr', 'needs.gate.outputs.pr_number'],
     ['human-fix.yml', 'agent-pr', 'needs.gate.outputs.pr_number'],
   ]);
   for (const f of REUSABLE) assert.doesNotMatch(read(f), /cancel-in-progress: true/);
@@ -240,6 +241,7 @@ const REQUIRED_ENV = {
   'start-review': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER', 'ACTOR', 'VIA'],
   'plan-remediation': ['GITHUB_TOKEN', PAT, 'AW_CONFIG', 'PR_NUMBER'],
   'record-codex-completion': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER'],
+  'record-head-change': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER'],
   'finish-remediation': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'PASSES', 'COUNTABLE', 'HEAD_SHA', 'CODEX_FINDINGS', ...CLAUDE, ...VALIDATION],
   'finish-audit': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', ...CLAUDE],
   'finish-final-fix': ['GITHUB_TOKEN', 'AW_CONFIG', 'PR_NUMBER', 'HEAD_SHA', 'AUDIT_SUMMARY', ...CLAUDE, ...VALIDATION],
@@ -269,7 +271,7 @@ test('every runtime step receives exactly the inputs its command reads', () => {
       }
     }
   }
-  assert.equal(checked, 28);
+  assert.equal(checked, 29);
 });
 
 test('write sessions are verified against the head recorded before Claude ran, and only a verified fix requests review', () => {
@@ -335,6 +337,7 @@ const WRITES_PR_COMMENTS = [
   'start-review',
   'plan-remediation',
   'record-codex-completion',
+  'record-head-change',
   'finish-remediation',
   'finish-audit',
   'finish-final-fix',

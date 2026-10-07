@@ -121,6 +121,7 @@ cannot read another private repository.
 | agent-review | `issue_comment.created` | PR comment starting `/agent-review` | start/restart review cycle |
 | agent-review | `pull_request_review.submitted` | reviewer is a `Bot` whose login starts `chatgpt-codex-connector` | remediation / escalation |
 | agent-review | `issue_comment.created` / `.edited` | Codex bot comment containing its review-summary marker or "find any major issues" | record a completed Codex review |
+| agent-review | `pull_request.synchronize` | the PR carries `agent-review` | withdraw readiness, or the awaited review, for an older head |
 | agent-human-fix | `issue_comment.created` | PR comment starting `/agent-fix` | human-requested fix |
 
 The gate then requires the exact Codex bot account (see
@@ -180,7 +181,8 @@ State is a single PR comment written by `github-actions[bot]`:
 <!-- review_origin=human-fix -->
 <!-- review_requested_at=2026-10-05T18:46:00Z -->
 <!-- review_request_id=3412345678 -->
-<!-- addressed_threads=PRRT_kwDOUUJ5e86pINYh@53d8ae2…,PRRT_kwDOUUJ5e86pINYp@53d8ae2… -->
+<!-- fixed_threads=PRRT_kwDOUUJ5e86pINYh@53d8ae2… -->
+<!-- addressed_threads=PRRT_kwDOUUJ5e86pINYp@1a2b3c4… -->
 ### Agent review status
 **Stage:** Codex review after owner-requested fix requested; awaiting completion signal.
 **Codex review:** Awaiting completion signal
@@ -194,10 +196,11 @@ This comment is the authoritative status of the automation. Only comments
 authored by `github-actions[bot]` are trusted as state, so a human cannot
 accidentally (or deliberately) reset the budget by pasting the markers, and
 markers are read only above the heading, so text quoted in the details cannot
-add any. The `review_*` markers track the Codex review being awaited, and
-`addressed_threads` lists Codex threads fixed by verified pushes, each with the
-commit that fixed it (see below); state written before they existed simply has
-none.
+add any. The `review_*` markers track the Codex review being awaited;
+`fixed_threads` and `addressed_threads` list Codex threads fixed by verified
+pushes, unconfirmed and confirmed, each with the commit that fixed it; and
+`ready_sha` is the head a "ready for human acceptance" claim covers (see below).
+State written before these existed simply has none.
 
 Each Codex review request is a comment posted with `AGENT_GITHUB_TOKEN`:
 
@@ -235,28 +238,51 @@ records those findings' threads as addressed, increments `passes` when the revie
 was countable, and requests a re-review (origin=remediation). `blocked`,
 `no_change` and invalid results stop for a human without requesting a review.
 
-**Addressed threads:** GitHub's `resolveReviewThread` requires Contents: write
-(Pull requests: write is not enough), and no agent-workflows token has it: that
-is what keeps pushes on Claude's short-lived App token. So fixed Codex threads
-stay open on GitHub, and the state comment records the fix instead. Only
-evidence of a fix counts, never a judgement:
+**Fixed and addressed threads:** GitHub's `resolveReviewThread` requires
+Contents: write (Pull requests: write is not enough), and no agent-workflows
+token has it: that is what keeps pushes on Claude's short-lived App token. So
+fixed Codex threads stay open on GitHub, and the state comment records the fix
+instead. Only evidence counts, never a judgement:
 
 | Event | Effect on a Codex finding |
 | --- | --- |
-| Remediation pass with a verified push and passing validation | the findings Claude was given are recorded as addressed by the pushed head (`thread@sha`) |
+| Remediation pass with a verified push and passing validation | the findings Claude was given are recorded as **fixed** by the pushed head (`thread@sha`), unconfirmed |
+| A clean Codex review of a head that contains that commit | those fixes are **confirmed** (addressed) |
 | A human resolves the thread on GitHub | addressed (resolved threads are never findings) |
+| A Codex review that completes with findings | nothing is confirmed |
 | The read-only final audit judges it invalid, already fixed or non-actionable | nothing; it awaits a human decision |
 | The final fix (given the audit's findings, not the threads), `no_change`, `blocked`, an invalid result, or a fix that fails validation | nothing |
 
 A record counts only while the branch still contains its fix: the current head
 must be that commit or descend from it, which GitHub's compare API answers.
 Merging the base branch keeps the fix as an ancestor. A rebase, squash or
-force-push that drops it voids the proof, so the finding is listed in prompts and
-blocks readiness again; so does any commit or comparison GitHub cannot answer.
-Addressed findings are left out of later prompts and do not block readiness;
-any other open, non-outdated Codex thread does. The workflow still tries to
-resolve exactly the threads a verified pass fixed, stopping at the first
-refusal, and the status comment says how many stay open for the human.
+force-push that drops it voids the proof, so the finding counts again; so does
+any commit or comparison GitHub cannot answer.
+
+At a clean review, fixes in the branch (confirmed or not) do not block
+readiness, and the review confirms the unconfirmed ones; any other open,
+non-outdated Codex thread blocks it. In later prompts, confirmed fixes are left
+out and unconfirmed ones are listed, marked with their fix commit, for Claude to
+check. At the end of escalation only confirmed fixes count, so fixes no clean
+review confirmed are left for a human. The workflow still tries to resolve
+exactly the threads a verified pass fixed, stopping at the first refusal, and the
+status comment says how many stay open. If Codex does not repeat issues that
+already have an open thread, a clean review is weaker evidence than it looks;
+only a human resolving the thread, or GitHub marking it outdated, is unambiguous.
+
+**Readiness is a claim about one head.** "Ready for human acceptance" is
+recorded with the commit it covers (`ready_sha`) and every other transition
+clears it. Any push to an opted-in PR (a fix, a merge from the base, a rebase, a
+revert) withdraws it, as it does a Codex review still awaited for an older
+commit: the review wrapper listens to `pull_request` `synchronize`, and the
+status says the PR is not ready until a Codex review of the new head, requested
+with `/agent-review`, completes cleanly. That review re-checks every fix record
+against the new head, so a revert that dropped a fix cannot become ready again.
+Pushes the automation already accounted for (Claude's, followed by its own
+re-review request) change nothing, and the gate filters them out before any
+locked job is queued. GitHub runs no `pull_request` workflows while a PR has
+merge conflicts, but such a PR cannot be merged, and resolving the conflict is a
+push that withdraws readiness.
 
 **Budget accounting:** a pass is consumed only when a countable remediation
 actually pushes a branch mutation, that is, Claude returns `fixed` and the
@@ -370,11 +396,13 @@ deliberately strict (table header, one Code Review row, a commit); anything else
 is logged and ignored rather than guessed.
 
 ```text
-requested ──clean signal, checks pass──────────────▶ clean
+requested ──clean signal, checks pass──────────────▶ clean (ready at that head)
     │      ──signal, but findings / Codex review ──▶ findings ──▶ remediation …
     │      ──signal, but head moved ───────────────▶ outdated
+    ├── a push to the PR ──────────────────────────▶ outdated
     ├── Codex pull request review (remediate) ─────▶ findings
     └── /agent-fix starts ─────────────────────────▶ (no review awaited)
+clean ── a push to the PR ─────────────────────────▶ outdated (readiness withdrawn)
 any ── new review request ─────────────────────────▶ requested (new SHA)
 ```
 
@@ -580,4 +608,8 @@ Verified against GitHub documentation in October 2026.
     summary comment and posts a result comment instead, so the review wrapper also
     listens to `issue_comment` `edited` events and the runtime correlates them;
     see [Codex review completion](#codex-review-completion). Each summary edit
+    starts a short gate job.
+17. **Nothing on GitHub ties a status comment to a head.** The review wrapper
+    therefore also listens to `pull_request` `synchronize` on opted-in PRs, so a
+    push withdraws a readiness claim made for an older head. Each such push
     starts a short gate job.

@@ -356,3 +356,38 @@ test('completion: a formal Codex review of the awaited commit leaves the next st
   assert.equal(d.action, 'none');
   assert.match(d.reason, /that review drives remediation/);
 });
+
+// Pushes ---------------------------------------------------------------------------------------
+
+const push = (head, number = 10) => ({ eventName: 'pull_request', event: { action: 'synchronize', pull_request: { number, head: { sha: head } } } });
+
+function pushWorld(state, labelBy = BOT) {
+  const gh = reviewWorld();
+  if (labelBy) gh.labelEvent(10, 'agent-review', labelBy);
+  gh.addComment(10, renderState({ passes: 1, final: 'not_started', maxPasses: 3, stage: 'seed', ...state }), BOT);
+  return gh;
+}
+
+test('push: only a push that invalidates readiness or the awaited review starts a job, silently', async () => {
+  const review = (status, sha = SHA) => ({ review: { sha, status, origin: 'remediation', requestedAt: null, requestId: null, completedAt: null } });
+  const NEW = 'b'.repeat(40);
+  const cases = [
+    [{ readySha: SHA, ...review('clean') }, NEW, 'head-moved', /withdraws readiness/],
+    [{ readySha: SHA, ...review('clean') }, SHA, 'none', /invalidates nothing/],
+    [review('requested'), NEW, 'head-moved', /outdates the awaited Codex review/],
+    [review('requested', NEW), NEW, 'none', /invalidates nothing/],
+    [review('findings'), NEW, 'none', /invalidates nothing/], // Claude pushing during remediation
+    [{}, NEW, 'none', /invalidates nothing/],
+  ];
+  for (const [state, head, action, reason] of cases) {
+    const d = await gateReview({ client: pushWorld(state).client(), repo, config: cfg(), ...push(head) });
+    assert.equal(d.action, action, JSON.stringify(state));
+    assert.match(d.reason, reason);
+    assert.equal(d.refusal, undefined, 'never replies');
+  }
+  const optedOut = await gateReview({ client: pushWorld({ readySha: SHA }, null).client(), repo, config: cfg(), ...push(NEW) });
+  assert.equal(optedOut.action, 'none');
+  const fork = reviewWorld();
+  fork.addPull({ number: 12, head: { ref: 'x', repo: { full_name: 'mallory/widget' } }, labels: [{ name: 'agent-review' }] });
+  assert.match((await gateReview({ client: fork.client(), repo, config: cfg(), ...push(NEW, 12) })).reason, /fork/);
+});

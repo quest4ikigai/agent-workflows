@@ -417,12 +417,14 @@ export const cleanResult = (commit = '4d1c0e3164') =>
 
 /**
  * Evaluate the subset of the GitHub Actions expression language that wrapper
- * `if:` filters use: property paths, string/null/boolean literals, ( ), !, ==,
- * !=, &&, || and startsWith/contains/endsWith. Like GitHub, string comparison
- * and the functions ignore case, and missing properties are null.
+ * `if:` filters use: property paths (with the `*` object filter),
+ * string/null/boolean literals, ( ), !, ==, !=, &&, || and
+ * startsWith/contains/endsWith. Like GitHub, string comparison and the
+ * functions ignore case, contains() also searches arrays, and missing
+ * properties are null.
  */
 export function evaluateExpression(expression, context) {
-  const tokens = expression.match(/'(?:[^']|'')*'|\|\||&&|==|!=|[()!,]|[A-Za-z_][A-Za-z0-9_.-]*|\S/g);
+  const tokens = expression.match(/'(?:[^']|'')*'|\|\||&&|==|!=|[()!,]|[A-Za-z_][A-Za-z0-9_-]*(?:\.(?:[A-Za-z0-9_-]+|\*))*|\S/g);
   let at = 0;
   const peek = () => tokens[at];
   const take = (expected) => {
@@ -436,7 +438,7 @@ export function evaluateExpression(expression, context) {
   const fns = {
     startswith: (a, b) => str(a).startsWith(str(b)),
     endswith: (a, b) => str(a).endsWith(str(b)),
-    contains: (a, b) => str(a).includes(str(b)),
+    contains: (a, b) => (Array.isArray(a) ? a.some((e) => equal(e, b)) : str(a).includes(str(b))),
   };
   const primary = () => {
     const t = take();
@@ -457,7 +459,13 @@ export function evaluateExpression(expression, context) {
       if (!fn) throw new Error(`unsupported function ${t}`);
       return fn(...args);
     }
-    return t.split('.').reduce((v, k) => (v === null || v === undefined ? null : v[k] ?? null), context);
+    const resolve = (v, keys) => {
+      if (!keys.length || v === null || v === undefined) return v ?? null;
+      const [k, ...more] = keys;
+      if (k === '*') return (Array.isArray(v) ? v : Object.values(v)).map((e) => resolve(e, more));
+      return resolve(v[k], more);
+    };
+    return resolve(context, t.split('.'));
   };
   const comparison = () => {
     const left = primary();

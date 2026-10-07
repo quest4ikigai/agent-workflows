@@ -118,6 +118,7 @@ Re-running `install` is safe; it reports each file as `create`, `update`,
 | Codex submits a review on an opted-in PR | Codex | Remediation or escalation |
 | Comment `/agent-fix <feedback>` on a PR | trusted user | Claude applies the feedback, then Codex re-reviews |
 | Codex edits its review summary or posts "Didn't find any major issues" | Codex | The completed review is recorded in the status comment |
+| Push to an opted-in PR | anyone | Readiness for the previous head is withdrawn until Codex reviews the new one |
 
 A *trusted user* is listed in `trusted_users` **and** currently has write or
 admin access. Arbitrary issues and PRs are never touched.
@@ -155,12 +156,16 @@ unresolved Codex inline threads, collected by the workflow, rather than relying 
 the review body. Details:
 [docs/architecture.md](docs/architecture.md#agent-results-are-verified-not-trusted).
 
+"Ready for human acceptance" covers one commit. Any later push, including a merge
+from the base branch, withdraws it until a Codex review of the new head (comment
+`/agent-review`) completes cleanly.
+
 Codex threads fixed by a verified pass stay **open on GitHub**: GitHub only lets a
 token with Contents: write resolve a review thread, and agent-workflows' tokens are
-read-only by design. The status comment records each fix with its commit, so the
-finding no longer blocks "ready for human acceptance" while that commit is in the
-branch. Only a verified, validated push records a fix; an audit's verdict never
-does. Resolve the threads yourself when you accept.
+read-only by design. The status comment records each fix with its commit, and a
+clean Codex re-review of a head containing that commit confirms it; a fix counts
+only while its commit is in the branch. An audit's verdict never records a fix.
+Resolve the threads yourself when you accept.
 
 ## Security model (summary)
 
